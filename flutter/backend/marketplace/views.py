@@ -301,9 +301,11 @@ class DeviceTokenView(APIView):
         DeviceToken.objects.update_or_create(token=token,defaults={"user":request.user,"platform":platform})
         return Response({"registered":True},status=status.HTTP_200_OK)
 
-class NotificationListView(generics.ListAPIView):
+class NotificationListView(APIView):
     permission_classes=[permissions.IsAuthenticated]
-    def get_queryset(self): return AppNotification.objects.filter(user=self.request.user)[:100]
+    def get(self,request):
+        items=AppNotification.objects.filter(user=request.user).select_related("booking")[:100]
+        return Response([{"id":n.id,"title":n.title,"body":n.body,"kind":n.kind,"booking_id":n.booking_id,"is_read":n.is_read,"created_at":n.created_at.isoformat()} for n in items])
 
 class NotificationReadView(APIView):
     permission_classes=[permissions.IsAuthenticated]
