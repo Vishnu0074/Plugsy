@@ -247,7 +247,7 @@ class _HomePageState extends State<HomePage> {
       } else if(isHost&&state=='accepted'&&started){
         action=IconButton(tooltip:'Complete session',onPressed:()=>completeSession(b),icon:const Icon(Icons.check_circle_outline));
       } else if(!isHost&&state=='completed'&&!paid){
-        action: action=FilledButton(onPressed:()=>payForBooking(b),child:const Text('Pay'));
+        action=FilledButton(onPressed:()=>payForBooking(b),child:const Text('Pay'));
       } else if(!isHost&&state=='completed'&&paid&&!hasReview){
         action=TextButton(onPressed:()=>leaveReview(b),child:const Text('Review'));
       } else if(!isHost&&state=='completed'&&paid&&hasReview){
