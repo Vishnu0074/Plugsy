@@ -26,15 +26,12 @@ class ChargerSerializer(serializers.ModelSerializer):
         read_only_fields = ["id","host_username","average_rating","review_count","distance_km","created_at"]
     def _may_see_exact_location(self, obj):
         request = self.context.get("request")
-        if not request or not request.user.is_authenticated:
-            return False
-        if obj.host_id == request.user.id:
-            return True
+        if not request or not request.user.is_authenticated: return False
+        if obj.host_id == request.user.id: return True
         return Booking.objects.filter(charger=obj, driver=request.user, status__in=["accepted","completed"]).exists()
     def to_representation(self, instance):
         data = super().to_representation(instance)
         if not self._may_see_exact_location(instance):
-            # Public map pins are intentionally approximate to protect home addresses.
             data["latitude"] = round(float(instance.latitude), 3)
             data["longitude"] = round(float(instance.longitude), 3)
         return data
@@ -48,10 +45,12 @@ class BookingSerializer(serializers.ModelSerializer):
     charger_title = serializers.CharField(source="charger.title",read_only=True)
     charger_host = serializers.CharField(source="charger.host.username",read_only=True)
     driver_username = serializers.CharField(source="driver.username",read_only=True)
+    is_host = serializers.SerializerMethodField()
     class Meta:
         model = Booking
-        fields = ["id","charger","charger_title","charger_host","driver","driver_username","status","requested_at","responded_at","estimated_kwh","total_amount","platform_fee","payment_status"]
-        read_only_fields = ["id","driver","status","requested_at","responded_at","total_amount","platform_fee","payment_status","charger_title","charger_host","driver_username"]
+        fields = ["id","charger","charger_title","charger_host","driver","driver_username","is_host","status","requested_at","responded_at","session_started_at","completed_at","estimated_kwh","actual_kwh","total_amount","platform_fee","payment_status"]
+        read_only_fields = ["id","driver","status","requested_at","responded_at","session_started_at","completed_at","actual_kwh","total_amount","platform_fee","payment_status","charger_title","charger_host","driver_username","is_host"]
+    def get_is_host(self,obj): return bool(self.context.get("request") and obj.charger.host_id==self.context["request"].user.id)
 
 class ReviewSerializer(serializers.ModelSerializer):
     author_username = serializers.CharField(source="author.username",read_only=True)
@@ -60,9 +59,14 @@ class ReviewSerializer(serializers.ModelSerializer):
         fields = ["id","charger","booking","rating","comment","author_username","created_at"]
         read_only_fields = ["id","author_username","created_at"]
     def validate(self,attrs):
-        booking = attrs.get("booking")
-        if booking.driver_id != self.context["request"].user.id or booking.status != "completed":
-            raise serializers.ValidationError("Only a driver with a completed booking can review this charger.")
+        booking=attrs.get("booking")
+        request=self.context["request"]
+        if booking.driver_id != request.user.id:
+            raise serializers.ValidationError("Only the driver who booked can leave a review.")
+        if booking.status != "completed" or booking.payment_status != "paid":
+            raise serializers.ValidationError("Complete the charging session and payment before reviewing.")
         if booking.charger_id != attrs["charger"].id:
-            raise serializers.ValidationError("Review charger must match the completed booking.")
+            raise serializers.ValidationError("Review charger must match the booking.")
+        if Review.objects.filter(booking=booking).exists():
+            raise serializers.ValidationError("This booking has already been reviewed.")
         return attrs
