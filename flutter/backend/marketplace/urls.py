@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     ChargerListCreateView, BookingListCreateView, BookingRespondView,
     BookingStartView, BookingCompleteView, CreatePaymentOrderView,
-    VerifyPaymentView, RazorpayWebhookView, DeviceTokenView, NotificationListView,
+    VerifyPaymentView, RazorpayWebhookView, DeviceTokenView, HostPayoutListView, NotificationListView,
     NotificationReadView, ReviewListCreateView,
 )
 urlpatterns = [
@@ -15,6 +15,7 @@ urlpatterns = [
     path("bookings/<int:pk>/verify-payment/", VerifyPaymentView.as_view(), name="verify-payment"),
     path("payments/razorpay/webhook/", RazorpayWebhookView.as_view(), name="razorpay-webhook"),
     path("devices/register/", DeviceTokenView.as_view(), name="device-register"),
+    path("payouts/", HostPayoutListView.as_view(), name="host-payouts"),
     path("notifications/", NotificationListView.as_view(), name="notifications"),
     path("notifications/<int:pk>/read/", NotificationReadView.as_view(), name="notification-read"),
     path("reviews/", ReviewListCreateView.as_view(), name="reviews"),
