@@ -110,14 +110,14 @@ class _AuthPageState extends State<AuthPage> {
 
 class HomePage extends StatefulWidget { const HomePage({super.key}); @override State<HomePage> createState()=>_HomePageState(); }
 class _HomePageState extends State<HomePage> {
-  int tab=0; List<dynamic> bookings=[]; bool busy=false;
+  int tab=0; List<dynamic> bookings=[]; bool busy=false; LatLng? userPoint;
   Future<void> nearby() async {
     double? lat,lng;
     try {
       if(await Geolocator.isLocationServiceEnabled()){
         var p=await Geolocator.checkPermission();
         if(p==LocationPermission.denied)p=await Geolocator.requestPermission();
-        if(p==LocationPermission.always||p==LocationPermission.whileInUse){final pos=await Geolocator.getCurrentPosition();lat=pos.latitude;lng=pos.longitude;}
+        if(p==LocationPermission.always||p==LocationPermission.whileInUse){final pos=await Geolocator.getCurrentPosition();lat=pos.latitude;lng=pos.longitude;userPoint=LatLng(pos.latitude,pos.longitude);}
       }
     }catch(_){}
     if(mounted) await context.read<PlugsyState>().loadChargers(lat:lat,lng:lng);
@@ -138,7 +138,7 @@ class _HomePageState extends State<HomePage> {
   Widget discover()=>Consumer<PlugsyState>(builder:(context,s,_)=>RefreshIndicator(onRefresh:nearby,child:ListView(padding:const EdgeInsets.all(16),children:[
     Container(padding:const EdgeInsets.all(22),decoration:BoxDecoration(color:const Color(0xFF17231A),borderRadius:BorderRadius.circular(24)),child:const Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text('Low battery?',style:TextStyle(color:Color(0xFFB7F36B),fontSize:26,fontWeight:FontWeight.w900)),SizedBox(height:6),Text('Find a nearby charger shared by the community.',style:TextStyle(color:Colors.white70))])),
     const SizedBox(height:16),Row(children:[const Expanded(child:Text('Chargers near you',style:TextStyle(fontSize:20,fontWeight:FontWeight.w800))),IconButton(onPressed:nearby,icon:const Icon(Icons.refresh))]),
-    OutlinedButton.icon(onPressed:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>ChargerMap(chargers:s.chargers))),icon:const Icon(Icons.map_outlined),label:const Text('View on map')),
+    OutlinedButton.icon(onPressed:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>ChargerMap(chargers:s.chargers, initial:userPoint))),icon:const Icon(Icons.map_outlined),label:const Text('View on map')),
     if(s.error!=null)Text('API error: ${s.error}'),
     if(s.chargers.isEmpty&&!s.loading)const Padding(padding:EdgeInsets.all(18),child:Text('No published chargers found yet. Try again or become the first host in your area.')),
     if(s.loading)const Center(child:CircularProgressIndicator()),
@@ -160,8 +160,8 @@ class _HomePageState extends State<HomePage> {
 }
 
 class ChargerMap extends StatelessWidget {
-  const ChargerMap({super.key,required this.chargers}); final List<dynamic> chargers;
-  @override Widget build(BuildContext context)=>Scaffold(appBar:AppBar(title:const Text('Chargers nearby')),body:FlutterMap(options:const MapOptions(initialCenter:LatLng(9.9312,76.2673),initialZoom:11),children:[
+  const ChargerMap({super.key,required this.chargers,this.initial}); final List<dynamic> chargers; final LatLng? initial;
+  @override Widget build(BuildContext context)=>Scaffold(appBar:AppBar(title:const Text('Chargers nearby')),body:FlutterMap(options:MapOptions(initialCenter:initial ?? (chargers.isNotEmpty ? LatLng(double.parse(chargers.first['latitude'].toString()),double.parse(chargers.first['longitude'].toString())) : const LatLng(9.9312,76.2673)),initialZoom:11),children:[
     TileLayer(urlTemplate:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',userAgentPackageName:'com.plugsy.app'),
     MarkerLayer(markers:chargers.map((c)=>Marker(point:LatLng(double.parse(c['latitude'].toString()),double.parse(c['longitude'].toString())),width:48,height:48,child:GestureDetector(onTap:()=>showModalBottomSheet(context:context,builder:(_)=>Padding(padding:const EdgeInsets.all(20),child:Text('${c['title']} · ₹${c['price_per_kwh']}/kWh · ★ ${c['average_rating']??0}'))),child:const Icon(Icons.location_pin,color:Colors.green,size:40)))).toList()),
     const RichAttributionWidget(attributions:[TextSourceAttribution('© OpenStreetMap contributors')]),
