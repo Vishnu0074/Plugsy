@@ -211,16 +211,62 @@ class _HomePageState extends State<HomePage> {
     ...s.chargers.map((c)=>Card(child:ListTile(leading:const CircleAvatar(backgroundColor:Color(0xFFEAF8D9),child:Icon(Icons.ev_station,color:Colors.black)),title:Text('${c['title']}',style:const TextStyle(fontWeight:FontWeight.bold)),subtitle:Text('${c['connector_type']} · ${c['power_kw']} kW · ★ ${c['average_rating']??0} (${c['review_count']??0})'),trailing:Text('₹${c['price_per_kwh']}\n/kWh',textAlign:TextAlign.end,style:const TextStyle(fontWeight:FontWeight.bold)),onTap:()=>requestCharge(c))),
   ])));
   Future<void> requestCharge(dynamic c) async {
-    final ok=await showModalBottomSheet<bool>(context:context,builder:(ctx)=>Padding(padding:const EdgeInsets.all(24),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.start,children:[Text('${c['title']}',style:Theme.of(context).textTheme.titleLarge),Text('₹${c['price_per_kwh']} / kWh · ${c['connector_type']}'),const SizedBox(height:12),const Text('Request a booking. The host must accept before you travel. Phone ringing requires push notification setup.'),const SizedBox(height:12),FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Request a charge'))])));
-    if(ok!=true)return;
-    try{final d=await context.read<PlugsyState>().request('/bookings/',method:'POST',body:{'charger':c['id']});if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Request sent: ${d['status']}')));}
-    catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString())));}
+    final estimate=TextEditingController(text:'10');
+    final kwh=await showModalBottomSheet<String>(context:context,isScrollControlled:true,builder:(ctx)=>Padding(padding:EdgeInsets.only(left:24,right:24,top:24,bottom:MediaQuery.of(ctx).viewInsets.bottom+24),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.start,children:[
+      Text('${c['title']}',style:Theme.of(context).textTheme.titleLarge),
+      const SizedBox(height:8),Text('₹${c['price_per_kwh']} / kWh · ${c['connector_type']}'),
+      const SizedBox(height:12),const Text('Choose an estimated energy amount. The host must accept the request. You will pay the final amount after the host records the completed session.'),
+      const SizedBox(height:12),TextField(controller:estimate,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'Estimated energy (kWh)')),
+      const SizedBox(height:12),SizedBox(width:double.infinity,child:FilledButton(onPressed:()=>Navigator.pop(ctx,estimate.text.trim()),child:const Text('Send booking request'))),
+    ])));
+    if(kwh==null){estimate.dispose();return;}
+    try{
+      final amount=double.parse(kwh);
+      if(amount<=0||amount>1000)throw Exception('Enter energy between 0 and 1000 kWh.');
+      final d=await context.read<PlugsyState>().request('/bookings/',method:'POST',body:{'charger':c['id'],'estimated_kwh':amount});
+      if(mounted){ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Request sent: ${d['status']??'pending'}')));setState(()=>tab=1);await loadBookings();}
+    }catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString().replaceFirst('Exception: ',''))));}
+    finally{estimate.dispose();}
   }
   Widget requests()=>RefreshIndicator(onRefresh:loadBookings,child:ListView(padding:const EdgeInsets.all(16),children:[
-    const Text('Booking requests',style:TextStyle(fontSize:22,fontWeight:FontWeight.w800)),
+    const Text('Booking requests & sessions',style:TextStyle(fontSize:22,fontWeight:FontWeight.w800)),
+    const SizedBox(height:8),
     if(busy)const Center(child:CircularProgressIndicator()),
-    if(!busy&&bookings.isEmpty)const Text('Booking requests and sessions will appear here.'),
-    ...bookings.map((b)=>Card(child:ListTile(title:Text('Booking #${b['id']} · ${b['charger_title']??'Charger'}'),subtitle:Text('Status: ${b['status']} · Driver: ${b['driver_username']??''}'),trailing:b['status']=='pending'?PopupMenuButton<bool>(onSelected:(accept)=>respond(b['id'],accept),itemBuilder:(_)=>const[PopupMenuItem(value:true,child:Text('Accept')),PopupMenuItem(value:false,child:Text('Decline'))]):null))),
+    if(!busy&&bookings.isEmpty)const Text('Booking requests and sessions will appear here. Pull to refresh.'),
+    ...bookings.map((b){
+      final isHost=b['is_host']==true;
+      final state=(b['status']??'pending').toString();
+      final started=b['session_started_at']!=null;
+      final paid=b['payment_status']=='paid';
+      final hasReview=b['has_review']==true;
+      Widget? action;
+      if(isHost&&state=='pending'){
+        action=PopupMenuButton<bool>(tooltip:'Respond',onSelected:(accept)=>respond(b['id'],accept),itemBuilder:(_)=>const[PopupMenuItem(value:true,child:Text('Accept request')),PopupMenuItem(value:false,child:Text('Decline request'))]);
+      } else if(isHost&&state=='accepted'&&!started){
+        action=IconButton(tooltip:'Start charging session',onPressed:()=>markStarted(b),icon:const Icon(Icons.play_circle_outline));
+      } else if(isHost&&state=='accepted'&&started){
+        action=IconButton(tooltip:'Complete session',onPressed:()=>completeSession(b),icon:const Icon(Icons.check_circle_outline));
+      } else if(!isHost&&state=='completed'&&!paid){
+        action: action=FilledButton(onPressed:()=>payForBooking(b),child:const Text('Pay'));
+      } else if(!isHost&&state=='completed'&&paid&&!hasReview){
+        action=TextButton(onPressed:()=>leaveReview(b),child:const Text('Review'));
+      } else if(!isHost&&state=='completed'&&paid&&hasReview){
+        action=const Icon(Icons.verified,color:Colors.green);
+      }
+      return Card(margin:const EdgeInsets.only(bottom:10),child:Padding(padding:const EdgeInsets.all(12),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+        Row(children:[const Icon(Icons.ev_station,size:28),const SizedBox(width:10),Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+          Text('${b['charger_title']??'Charger'}',style:const TextStyle(fontWeight:FontWeight.bold,fontSize:16)),
+          Text('Booking #${b['id']} · ${isHost?'Driver':'Host'}: @${isHost?(b['driver_username']??'driver'):(b['charger_host']??'host')}'),
+        ])),Text(state.toUpperCase(),style:const TextStyle(fontSize:11,fontWeight:FontWeight.w800))]),
+        const SizedBox(height:8),
+        Text('Estimated: ${b['estimated_kwh']??'—'} kWh · Actual: ${b['actual_kwh']??'pending'} kWh'),
+        if(b['total_amount']!=null)Text('Final total: ₹${b['total_amount']} · Payment: ${b['payment_status']}'),
+        if(state=='accepted'&&!started)const Text('Host can start the session after the driver arrives.',style:TextStyle(color:Colors.black54)),
+        if(state=='accepted'&&started)const Text('Session started. Host records measured kWh when charging ends.',style:TextStyle(color:Colors.black54)),
+        if(state=='completed'&&!paid)const Text('Session is complete. Driver payment is due before a review.',style:TextStyle(color:Colors.black54)),
+        if(action!=null)Align(alignment:Alignment.centerRight,child:action),
+      ])));
+    }),
   ]));
   Future<void> respond(dynamic id,bool accept)async{try{await context.read<PlugsyState>().request('/bookings/$id/respond/',method:'POST',body:{'accept':accept});await loadBookings();}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString())));}}
 }
