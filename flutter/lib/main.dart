@@ -76,11 +76,11 @@ class PlugsyState extends ChangeNotifier {
     try {
       if (Firebase.apps.isEmpty || access == null) return;
       await FirebaseMessaging.instance.requestPermission(alert: true, badge: true, sound: true);
-      final token = await FirebaseMessaging.instance.getToken();
-      if (token != null) await request('/devices/register/', method: 'POST', body: {'token': token, 'platform': 'mobile'});
       FirebaseMessaging.instance.onTokenRefresh.listen((token) {
         request('/devices/register/', method: 'POST', body: {'token': token, 'platform': 'mobile'}).catchError((_) => <String,dynamic>{});
       });
+      final token = await FirebaseMessaging.instance.getToken();
+      if (token != null) await request('/devices/register/', method: 'POST', body: {'token': token, 'platform': 'mobile'});
     } catch (_) { /* The app remains usable without Firebase configuration. */ }
   }
   Future<void> auth({required bool register, required String identity, required String password, String email = '', bool host = false}) async {
