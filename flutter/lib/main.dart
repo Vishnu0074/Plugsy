@@ -196,7 +196,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> completeSession(dynamic booking) async {
     final input=TextEditingController();
     final kwh=await showDialog<String>(context:context,builder:(ctx)=>AlertDialog(title:const Text('Complete charging session'),content:TextField(controller:input,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'Measured energy (kWh)',hintText:'e.g. 12.5')),actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,input.text.trim()),child:const Text('Complete'))]));
-    if(kwh==null)return;
+    if(kwh==null){input.dispose();return;}
     try { await context.read<PlugsyState>().request('/bookings/${booking['id']}/complete/',method:'POST',body:{'actual_kwh':double.parse(kwh)}); await loadBookings(); }
     catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString().replaceFirst('Exception: ',''))));}
     finally{input.dispose();}
