@@ -59,7 +59,7 @@ class ReviewSerializer(serializers.ModelSerializer):
     class Meta:
         model = Review
         fields = ["id","charger","booking","rating","comment","author_username","created_at"]
-        read_only_fields = ["id","booking","author_username","created_at"]
+        read_only_fields = ["id","author_username","created_at"]
     def validate(self,attrs):
         booking = attrs.get("booking")
         if booking.driver_id != self.context["request"].user.id or booking.status != "completed":
