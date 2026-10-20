@@ -14,7 +14,8 @@ Plugsy is a peer-to-peer EV charging marketplace where drivers discover chargers
 3. Host accepts/declines, then starts the session when the driver arrives.
 4. Host records actual kWh at completion; the API calculates the final bill.
 5. Driver pays through Razorpay Checkout. The backend verifies the checkout signature, provider-side captured status and amount; a signed webhook handles asynchronous confirmation.
-6. Driver can review the charger after successful payment.
+6. If Razorpay Route is enabled and the host has a verified linked account, Plugsy initiates a host transfer and tracks transfer webhooks. Otherwise the payout is marked `needs_setup` and must not be represented as paid out.
+7. Driver can review the charger after successful payment.
 
 ## Development
 See [Flutter setup](flutter/README.md) and [Django API setup](flutter/backend/README.md). Run backend lifecycle tests with `python manage.py test marketplace`.
@@ -22,5 +23,5 @@ See [Flutter setup](flutter/README.md) and [Django API setup](flutter/backend/RE
 ## Important launch limitations
 - Energy consumption is host-entered; it is not independently metered by the EV charger.
 - Configure Firebase for real push delivery and Razorpay test keys before payment testing.
-- Before live transactions, add production-grade refunds/disputes, reconciliation, identity and charger safety verification, email verification, password reset, token refresh/revocation, monitoring, backups, and privacy/legal policies.
+- Before live transactions, activate and test Razorpay Route, add production-grade refunds/disputes and payout reconciliation, identity and charger safety verification, email verification, password reset, token refresh/revocation, monitoring, backups, and privacy/legal policies.
 - Protect private home addresses: the public API rounds coordinates until a booking is accepted.
