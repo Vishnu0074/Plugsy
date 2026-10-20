@@ -45,12 +45,14 @@ class BookingSerializer(serializers.ModelSerializer):
     charger_title = serializers.CharField(source="charger.title",read_only=True)
     charger_host = serializers.CharField(source="charger.host.username",read_only=True)
     driver_username = serializers.CharField(source="driver.username",read_only=True)
-    is_host = serializers.SerializerMethodField()\n    has_review = serializers.SerializerMethodField()
+    is_host = serializers.SerializerMethodField()
+    has_review = serializers.SerializerMethodField()
     class Meta:
         model = Booking
         fields = ["id","charger","charger_title","charger_host","driver","driver_username","is_host","has_review","status","requested_at","responded_at","session_started_at","completed_at","estimated_kwh","actual_kwh","total_amount","platform_fee","payment_status"]
         read_only_fields = ["id","driver","status","requested_at","responded_at","session_started_at","completed_at","actual_kwh","total_amount","platform_fee","payment_status","charger_title","charger_host","driver_username","is_host"]
-    def get_is_host(self,obj): return bool(self.context.get("request") and self.context["request"].user.is_authenticated and obj.charger.host_id==self.context["request"].user.id)\n    def get_has_review(self,obj): return Review.objects.filter(booking=obj).exists()
+    def get_is_host(self,obj): return bool(self.context.get("request") and self.context["request"].user.is_authenticated and obj.charger.host_id==self.context["request"].user.id)
+    def get_has_review(self,obj): return Review.objects.filter(booking=obj).exists()
 
 class ReviewSerializer(serializers.ModelSerializer):
     author_username = serializers.CharField(source="author.username",read_only=True)
