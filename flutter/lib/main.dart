@@ -259,7 +259,7 @@ class _HomePageState extends State<HomePage> {
     if(!busy&&bookings.isEmpty)const Text('Booking requests and sessions will appear here. Pull to refresh.'),
     if(payouts.isNotEmpty) ...[
       const SizedBox(height:16),const Text('Host payouts',style:TextStyle(fontSize:18,fontWeight:FontWeight.w800)),
-      ...payouts.map((p)=>Card(child:ListTile(leading:const Icon(Icons.account_balance_wallet_outlined),title:Text('Booking #${p['booking_id']} · ₹${p['amount_rupees']}'),subtitle:Text('${p['status']}${(p['error_message']??'').toString().isNotEmpty?' · ${p['error_message']}':''}'),trailing:p['status']=='settled'?const Icon(Icons.check_circle,color:Colors.green):const Icon(Icons.schedule)))),
+      ...payouts.map((p)=>Card(child:ListTile(leading:const Icon(Icons.account_balance_wallet_outlined),title:Text('Booking #${p['booking_id']} · ₹${p['amount_rupees']}'),subtitle:Text('${p['status']} · ${p['error_message']??''}'),trailing:p['status']=='settled'?const Icon(Icons.check_circle,color:Colors.green):const Icon(Icons.schedule)))),
     ],
     ...bookings.map((b){
       final isHost=b['is_host']==true;
