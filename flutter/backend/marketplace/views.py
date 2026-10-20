@@ -170,7 +170,8 @@ class BookingCompleteView(APIView):
         if booking.actual_kwh is not None: raise ValidationError("This session has already been completed.")
         try: actual=Decimal(str(request.data.get("actual_kwh")))
         except Exception: raise ValidationError({"actual_kwh":"Enter the measured energy in kWh."})
-        if actual<=0 or actual>Decimal("1000"): raise ValidationError({"actual_kwh":"Energy must be greater than 0 and no more than 1000 kWh."})
+        if actual<Decimal("0.01") or actual>Decimal("1000"): raise ValidationError({"actual_kwh":"Energy must be at least 0.01 and no more than 1000 kWh."})
+        actual=actual.quantize(Decimal("0.01"),rounding=ROUND_HALF_UP)
         total=(actual*booking.charger.price_per_kwh).quantize(Decimal("0.01"),rounding=ROUND_HALF_UP)
         # Platform fee remains zero until a disclosed fee policy is configured.
         booking.actual_kwh=actual
