@@ -150,7 +150,7 @@ class _AuthPageState extends State<AuthPage> {
 
 class HomePage extends StatefulWidget { const HomePage({super.key}); @override State<HomePage> createState()=>_HomePageState(); }
 class _HomePageState extends State<HomePage> {
-  int tab=0; List<dynamic> bookings=[]; bool busy=false; LatLng? userPoint; late Razorpay _razorpay; int? _paymentBookingId;
+  int tab=0; List<dynamic> bookings=[]; List<dynamic> payouts=[]; bool busy=false; LatLng? userPoint; late Razorpay _razorpay; int? _paymentBookingId;
   Future<void> nearby() async {
     double? lat,lng;
     try {
@@ -164,8 +164,11 @@ class _HomePageState extends State<HomePage> {
   }
   Future<void> loadBookings() async {
     setState(()=>busy=true);
-    try { final d=await context.read<PlugsyState>().request('/bookings/'); bookings=d is List?d:(d['results'] as List? ?? []); }
-    catch(e){if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString())));}
+    try {
+      final d=await context.read<PlugsyState>().request('/bookings/');
+      bookings=d is List?d:(d['results'] as List? ?? []);
+      try { final p=await context.read<PlugsyState>().request('/payouts/'); payouts=p is List?p:(p['results'] as List? ?? []); } catch (_) { payouts=[]; }
+    } catch(e){if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString())));}
     finally{if(mounted)setState(()=>busy=false);}
   }
   @override void initState(){super.initState();_razorpay=Razorpay();_razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS,_paymentSuccess);_razorpay.on(Razorpay.EVENT_PAYMENT_ERROR,_paymentError);_razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET,_externalWallet);WidgetsBinding.instance.addPostFrameCallback((_)=>nearby());}
@@ -254,6 +257,10 @@ class _HomePageState extends State<HomePage> {
     const SizedBox(height:8),
     if(busy)const Center(child:CircularProgressIndicator()),
     if(!busy&&bookings.isEmpty)const Text('Booking requests and sessions will appear here. Pull to refresh.'),
+    if(payouts.isNotEmpty) ...[
+      const SizedBox(height:16),const Text('Host payouts',style:TextStyle(fontSize:18,fontWeight:FontWeight.w800)),
+      ...payouts.map((p)=>Card(child:ListTile(leading:const Icon(Icons.account_balance_wallet_outlined),title:Text('Booking #${p['booking_id']} · ₹${p['amount_rupees']}'),subtitle:Text('${p['status']}${(p['error_message']??'').toString().isNotEmpty?' · ${p['error_message']}':''}'),trailing:p['status']=='settled'?const Icon(Icons.check_circle,color:Colors.green):const Icon(Icons.schedule)))),
+    ],
     ...bookings.map((b){
       final isHost=b['is_host']==true;
       final state=(b['status']??'pending').toString();
