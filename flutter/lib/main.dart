@@ -243,7 +243,7 @@ class _HomePageState extends State<HomePage> {
     if(kwh==null){estimate.dispose();return;}
     try{
       final amount=double.parse(kwh);
-      if(amount<=0||amount>1000)throw Exception('Enter energy between 0 and 1000 kWh.');
+      if(amount<0.1||amount>1000)throw Exception('Enter estimated energy between 0.1 and 1000 kWh.');
       final d=await context.read<PlugsyState>().request('/bookings/',method:'POST',body:{'charger':c['id'],'estimated_kwh':amount});
       if(mounted){ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Request sent: ${d['status']??'pending'}')));setState(()=>tab=1);await loadBookings();}
     }catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString().replaceFirst('Exception: ',''))));}
