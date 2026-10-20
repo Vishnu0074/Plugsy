@@ -461,6 +461,7 @@ class _HostPageState extends State<HostPage>{
 class PickMap extends StatefulWidget{const PickMap({super.key,this.initial});final LatLng? initial;@override State<PickMap> createState()=>_PickMapState();}
 class _PickMapState extends State<PickMap>{
   late LatLng point;
+  int mapVersion = 0;
   @override void initState(){super.initState();point=widget.initial??const LatLng(9.9312,76.2673);}
   Future<void> useCurrentLocation() async {
     try {
@@ -471,7 +472,7 @@ class _PickMapState extends State<PickMap>{
         throw Exception('Location permission is needed.');
       }
       final position = await Geolocator.getCurrentPosition();
-      if (mounted) setState(() => point = LatLng(position.latitude, position.longitude));
+      if (mounted) setState(() { point = LatLng(position.latitude, position.longitude); mapVersion++; });
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
     }
@@ -483,7 +484,7 @@ class _PickMapState extends State<PickMap>{
       TextButton(onPressed: () => Navigator.pop(context, point), child: const Text('Confirm')),
     ]),
     body: LeafletMapView(
-      key: ValueKey('${point.latitude},${point.longitude}'),
+      key: ValueKey(mapVersion),
       initial: point,
       pickMode: true,
       onPointSelected: (value) => setState(() => point = value),
