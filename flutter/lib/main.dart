@@ -9,10 +9,31 @@ import 'dart:convert';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:razorpay_flutter/razorpay_flutter.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 const apiBase = String.fromEnvironment('PLUGSY_API_BASE_URL', defaultValue: 'http://10.0.2.2:8000/api');
 
-Future<void> main() async { WidgetsFlutterBinding.ensureInitialized(); try { await Firebase.initializeApp(); } catch (_) { /* Add Firebase platform config to enable push notifications. */ } runApp(ChangeNotifierProvider(create: (_) => PlugsyState(), child: const PlugsyApp())); }
+final localNotifications = FlutterLocalNotificationsPlugin();
+const bookingChannel = AndroidNotificationChannel('plugsy_booking_alerts','Plugsy booking alerts',description:'Booking, charging-session, and payment updates',importance:Importance.max,playSound:true);
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  const initSettings=InitializationSettings(android:AndroidInitializationSettings('@mipmap/ic_launcher'),iOS:DarwinInitializationSettings());
+  await localNotifications.initialize(initSettings);
+  await localNotifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.createNotificationChannel(bookingChannel);
+  try {
+    await Firebase.initializeApp();
+    FirebaseMessaging.onMessage.listen((message) async {
+      final title=message.notification?.title ?? 'Plugsy update';
+      final body=message.notification?.body ?? 'You have a new booking update.';
+      await localNotifications.show(DateTime.now().millisecondsSinceEpoch.remainder(100000),title,body,NotificationDetails(
+        android:AndroidNotificationDetails(bookingChannel.id,bookingChannel.name,channelDescription:bookingChannel.description,importance:Importance.max,priority:Priority.high,playSound:true),
+        iOS:const DarwinNotificationDetails(presentAlert:true,presentBadge:true,presentSound:true),
+      ));
+    });
+  } catch (_) { /* Configure Firebase to enable remote and local booking alerts. */ }
+  runApp(ChangeNotifierProvider(create: (_) => PlugsyState(), child: const PlugsyApp()));
+}
 
 class PlugsyState extends ChangeNotifier {
   String? access;
@@ -24,7 +45,7 @@ class PlugsyState extends ChangeNotifier {
     access = p.getString('access');
     loading = false;
     notifyListeners();
-    if (access != null) await loadChargers();
+    if (access != null) { await _registerPushToken(); await loadChargers(); }
   }
   PlugsyState() { init(); }
   Future<dynamic> request(String path, {String method = 'GET', Map<String,dynamic>? body, bool auth = true}) async {
