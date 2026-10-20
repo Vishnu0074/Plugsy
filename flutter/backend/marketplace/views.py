@@ -86,7 +86,7 @@ def ensure_host_payout(payment):
             "status":"needs_setup",
         },
     )
-    if payout.status in ["initiated","settled","failed","needs_reconciliation"]:
+    if payout.status in ["initiated","transferred","failed","needs_reconciliation"]:
         return payout
     if amount_paise<=0:
         payout.status="failed"; payout.error_message="Net payout amount must be positive."
@@ -352,7 +352,7 @@ class RazorpayWebhookView(APIView):
             except (KeyError,HostPayout.DoesNotExist):
                 return Response({"received":True,"ignored":True})
             if event_type in ["transfer.processed","transfer.settled"]:
-                payout.status="settled"; payout.error_message=""
+                payout.status="transferred"; payout.error_message=""
             else:
                 payout.status="failed"; payout.error_message=f"Razorpay transfer event: {event_type}"[:500]
             payout.save(update_fields=["status","error_message","updated_at"])
