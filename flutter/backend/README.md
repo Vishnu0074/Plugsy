@@ -1,18 +1,54 @@
 # Plugsy Django backend
 
-## Run locally
-1. Create a virtual environment and install dependencies: `pip install -r requirements.txt`
-2. Set a secure SECRET_KEY for production; local development can use the default.
-3. Run `python manage.py makemigrations marketplace`, `python manage.py migrate`, then `python manage.py runserver 0.0.0.0:8000`.
-4. Android emulator API base URL: `http://10.0.2.2:8000/api`.
+## Local development
+```sh
+cd flutter/backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+python manage.py migrate
+python manage.py createsuperuser
+python manage.py runserver 0.0.0.0:8000
+```
 
-## Endpoints
-- POST /api/auth/register/ — email, username, password, wants_to_host
-- POST /api/auth/login/ — username or email and password; returns JWT
-- GET/POST /api/chargers/ — discover published chargers / create listing
-- GET/POST /api/bookings/ — list own bookings / request a charger
-- POST /api/bookings/<id>/respond/ — host accepts or declines a pending request
-- GET/POST /api/reviews/ — review a charger after a completed booking
+The initial migration is committed. Android emulator API URL: `http://10.0.2.2:8000/api`.
 
-## Production requirements
-Set SECRET_KEY, DEBUG=False, ALLOWED_HOSTS and DATABASE_URL; configure HTTPS, email verification, CORS, rate limiting, push notifications, payments, monitoring and backups. Use PostgreSQL/PostGIS for larger proximity searches. Booking acceptance does not prove payment or verified energy consumption. Do not expose exact private addresses before a booking is accepted.
+## Booking lifecycle
+1. Driver requests a charger and submits estimated kWh.
+2. The backend creates an in-app notification for the host and sends an FCM push when the device token and Firebase service-account credentials are configured.
+3. Host accepts or declines. Only one accepted booking per charger may be active at a time.
+4. Host starts the session when the driver arrives.
+5. Host records the measured kWh at session completion. The backend calculates the final amount from measured kWh × the host's published per-kWh price.
+6. Driver pays the final amount through Razorpay Checkout. The server verifies the checkout signature and confirms captured status/amount directly with Razorpay; a signed webhook also handles asynchronous confirmation.
+7. Driver can submit one 1–5-star review after the session is complete and payment is confirmed.
+
+**Metering limitation:** kWh is currently host-entered, not read from an EV charger/energy meter. Do not describe it as independently verified. Real-world launch needs metering integration, disputes/refunds, host identity and charger safety verification.
+
+## API routes
+- `POST /api/auth/register/`, `POST /api/auth/login/`
+- `GET/POST /api/chargers/`
+- `GET/POST /api/bookings/`
+- `POST /api/bookings/<id>/respond/`
+- `POST /api/bookings/<id>/start/`
+- `POST /api/bookings/<id>/complete/`
+- `POST /api/bookings/<id>/payment-order/`
+- `POST /api/bookings/<id>/verify-payment/`
+- `POST /api/payments/razorpay/webhook/`
+- `POST /api/devices/register/`
+- `GET /api/notifications/`, `POST /api/notifications/<id>/read/`
+- `GET/POST /api/reviews/`
+
+## Required configuration before live payments
+Set these environment variables on the backend host:
+- `SECRET_KEY`: long random secret; never use the development default.
+- `DEBUG=False`, `ALLOWED_HOSTS`, `DATABASE_URL`, `CORS_ALLOWED_ORIGINS`.
+- `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET`: use Razorpay test keys during testing; never place the secret in Flutter.
+- `RAZORPAY_WEBHOOK_SECRET`: create a Razorpay webhook for `payment.captured` and `payment.failed`, pointing to `https://YOUR_API/api/payments/razorpay/webhook/`.
+- `FIREBASE_SERVICE_ACCOUNT_JSON`: the Firebase service-account JSON encoded as a single-line JSON string for FCM push delivery.
+
+## Firebase mobile setup
+From `flutter/`, run `dart pub global activate flutterfire_cli` then `flutterfire configure` and follow the Firebase Android/iOS configuration instructions. Ensure the Android `google-services.json` and iOS `GoogleService-Info.plist` are added privately to the app configuration (do not commit service-account credentials). The app registers FCM device tokens after login and displays foreground alerts.
+
+## Production hardening still required
+Email verification/password reset, token refresh/logout revocation, refund/dispute handling, payment reconciliation, idempotency and rate-limit tests, privacy/legal notices, host/charger verification, exact-address disclosure rules, monitoring, backups, and physical-device build tests.
