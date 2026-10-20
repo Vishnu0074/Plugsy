@@ -132,7 +132,9 @@ class BookingRespondView(APIView):
         if booking.status!="pending": raise ValidationError("This booking has already been answered.")
         accept=request.data.get("accept")
         if not isinstance(accept,bool): raise ValidationError({"accept":"Must be true or false."})
-        if accept and Booking.objects.filter(charger=booking.charger,status="accepted").exclude(pk=booking.pk).exists():
+        # Lock the charger row so simultaneous host actions cannot accept overlapping sessions.
+        Charger.objects.select_for_update().get(pk=booking.charger_id)
+        if accept and Booking.objects.filter(charger_id=booking.charger_id,status="accepted").exclude(pk=booking.pk).exists():
             raise ValidationError("This charger already has an accepted booking. Complete that session before accepting another.")
         booking.status="accepted" if accept else "declined"
         booking.responded_at=timezone.now()
