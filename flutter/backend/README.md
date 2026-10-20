@@ -38,6 +38,7 @@ The initial migration is committed. Android emulator API URL: `http://10.0.2.2:8
 - `POST /api/payments/razorpay/webhook/`
 - `POST /api/devices/register/`
 - `GET /api/payouts/` — host payout status and transfer reconciliation state
+- `POST /api/payouts/<id>/retry/` — administrator-only retry for payouts marked `needs_setup` or `failed`; never retry `needs_reconciliation` until the provider dashboard confirms no transfer was created
 - `GET /api/notifications/`, `POST /api/notifications/<id>/read/`
 - `GET/POST /api/reviews/`
 
