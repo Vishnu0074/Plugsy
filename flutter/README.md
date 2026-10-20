@@ -31,6 +31,7 @@ The URL above is for an Android emulator. For iOS simulator use `http://127.0.0.
 3. Host starts the session when the driver arrives.
 4. Host records actual kWh to complete the session.
 5. Driver pays the calculated final amount through Razorpay Checkout.
-6. Driver leaves a 1–5 star review after payment is confirmed.
+6. Razorpay Route initiates the host transfer only after the host has completed provider linked-account/KYC setup; payout status appears in the host inbox.
+7. Driver leaves a 1–5 star review after payment is confirmed.
 
-**Not production-ready until tested:** the kWh value is entered by the host, not independently metered; push delivery needs Firebase configuration; payment flows need live-provider validation, refunds/disputes, and reconciliation. Email verification, password reset, access-token refresh, host/charger verification, and physical-device builds are also outstanding.
+**Not production-ready until tested:** the kWh value is entered by the host, not independently metered; push delivery needs Firebase configuration; payment flows and Razorpay Route transfers need live-provider validation, refunds/disputes, and reconciliation. Email verification, password reset, access-token refresh, host/charger verification, and physical-device builds are also outstanding.
