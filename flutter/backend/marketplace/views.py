@@ -247,6 +247,8 @@ class BookingCompleteView(APIView):
         if actual<Decimal("0.01") or actual>Decimal("1000"): raise ValidationError({"actual_kwh":"Energy must be at least 0.01 and no more than 1000 kWh."})
         actual=actual.quantize(Decimal("0.01"),rounding=ROUND_HALF_UP)
         total=(actual*booking.charger.price_per_kwh).quantize(Decimal("0.01"),rounding=ROUND_HALF_UP)
+        if total < Decimal("1.00"):
+            raise ValidationError({"actual_kwh":"The final total must be at least ₹1.00 for online payment."})
         # Platform fee remains zero until a disclosed fee policy is configured.
         booking.actual_kwh=actual
         booking.total_amount=total
@@ -271,6 +273,7 @@ class CreatePaymentOrderView(APIView):
         if not key_id or not key_secret:
             raise APIException("Online payments are not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.")
         amount_paise=int((booking.total_amount*100).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
+        if amount_paise < 100: raise ValidationError("The minimum online payment is ₹1.00.")
         payload=json.dumps({"amount":amount_paise,"currency":"INR","receipt":f"plugsy_booking_{booking.id}","notes":{"booking_id":str(booking.id)}}).encode()
         auth=base64.b64encode(f"{key_id}:{key_secret}".encode()).decode()
         req=urllib.request.Request("https://api.razorpay.com/v1/orders",data=payload,headers={"Authorization":f"Basic {auth}","Content-Type":"application/json"},method="POST")
