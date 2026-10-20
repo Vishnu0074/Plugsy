@@ -23,3 +23,7 @@ The URL above is for an Android emulator. For iOS simulator use `http://127.0.0.
 6. Driver can leave a 1–5 star review once the host confirms payment.
 
 No Firebase setup, push notifications, payment gateway, or automatic host payouts are used in this version. The app records the host's manual payment confirmation; it does not move money or independently verify payment. The kWh value is entered by the host, not independently metered.
+
+
+## Map
+Plugsy uses the open-source **Leaflet.js** library embedded in Flutter through WebView, with OpenStreetMap tiles and attribution. Hosts can use the device's current location or tap the map to select a charger's location. The discovery map displays charger markers. The map requires an internet connection to load Leaflet and map tiles.
