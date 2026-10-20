@@ -16,15 +16,13 @@ class RegisterSerializer(serializers.ModelSerializer):
         return user
 
 class ChargerSerializer(serializers.ModelSerializer):
-    latitude = serializers.SerializerMethodField()
-    longitude = serializers.SerializerMethodField()
     host_username = serializers.CharField(source="host.username", read_only=True)
     average_rating = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
     distance_km = serializers.SerializerMethodField()
     class Meta:
         model = Charger
-        fields = ["id","title","latitude","longitude","price_per_kwh","power_kw","connector_type","approximate_address","is_available","is_published","host_username","average_rating","review_count","distance_km","created_at"]
+        fields = ["id","title","latitude","longitude","price_per_kwh","power_kw","connector_type","approximate_address","is_available","is_published","safety_confirmed","host_username","average_rating","review_count","distance_km","created_at"]
         read_only_fields = ["id","host_username","average_rating","review_count","distance_km","created_at"]
     def _may_see_exact_location(self, obj):
         request = self.context.get("request")
@@ -33,12 +31,13 @@ class ChargerSerializer(serializers.ModelSerializer):
         if obj.host_id == request.user.id:
             return True
         return Booking.objects.filter(charger=obj, driver=request.user, status__in=["accepted","completed"]).exists()
-    def get_latitude(self, obj):
-        value = float(obj.latitude)
-        return value if self._may_see_exact_location(obj) else round(value, 3)
-    def get_longitude(self, obj):
-        value = float(obj.longitude)
-        return value if self._may_see_exact_location(obj) else round(value, 3)
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not self._may_see_exact_location(instance):
+            # Public map pins are intentionally approximate to protect home addresses.
+            data["latitude"] = round(float(instance.latitude), 3)
+            data["longitude"] = round(float(instance.longitude), 3)
+        return data
     def get_average_rating(self,obj):
         from django.db.models import Avg
         return round(obj.reviews.aggregate(v=Avg("rating"))["v"] or 0,1)
