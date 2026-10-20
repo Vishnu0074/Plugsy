@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Charger, Booking, Review, Payment, HostPayout, DeviceToken, AppNotification
+from .models import Charger, Booking, Review, AppNotification
 from .serializers import RegisterSerializer, ChargerSerializer, BookingSerializer, ReviewSerializer
 
 User = get_user_model()
@@ -45,108 +45,10 @@ class LoginView(APIView):
         return Response(token_payload(user))
 
 def notify_user(user, title, body, kind, booking=None):
-    """Persist every event; send an FCM push too when Firebase credentials are configured."""
-    notice = AppNotification.objects.create(user=user,title=title,body=body,kind=kind,booking=booking)
-    tokens = list(DeviceToken.objects.filter(user=user).values_list("token",flat=True))
-    service_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
-    if tokens and service_json:
-        try:
-            import firebase_admin
-            from firebase_admin import credentials, messaging
-            if not firebase_admin._apps:
-                credentials_obj = credentials.Certificate(json.loads(service_json))
-                firebase_admin.initialize_app(credentials_obj)
-            for token in tokens:
-                try:
-                    messaging.send(messaging.Message(
-                        notification=messaging.Notification(title=title,body=body),
-                        data={"kind":kind,"booking_id":str(booking.id if booking else "")},
-                        token=token,
-                    ))
-                except Exception:
-                    # Invalid tokens are cleaned up rather than breaking the booking operation.
-                    DeviceToken.objects.filter(token=token).delete()
-        except Exception:
-            # In-app notifications remain available if Firebase is not configured.
-            pass
-    return notice
-
-def ensure_host_payout(payment, force_retry=False):
-    """Create a payout ledger row and initiate a Razorpay Route transfer when configured."""
-    booking=payment.booking
-    host=booking.charger.host
-    fee_paise=int(((booking.platform_fee or Decimal("0.00"))*100).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
-    amount_paise=payment.amount_paise-fee_paise
-    payout,created=HostPayout.objects.get_or_create(
-        payment=payment,
-        defaults={
-            "host":host,
-            "linked_account_id":host.razorpay_account_id,
-            "amount_paise":max(amount_paise,0),
-            "status":"needs_setup",
-        },
+    """Persist an in-app notification; no push-notification provider is configured."""
+    return AppNotification.objects.create(
+        user=user, title=title, body=body, kind=kind, booking=booking
     )
-    if payout.status in ["initiated","transferred","needs_reconciliation"] or (payout.status=="failed" and not force_retry):
-        return payout
-    if force_retry and payout.status=="failed":
-        payout.status="needs_setup"; payout.error_message="Manual retry requested by an administrator."
-        payout.save(update_fields=["status","error_message","updated_at"])
-    if amount_paise<=0:
-        payout.status="failed"; payout.error_message="Net payout amount must be positive."
-        payout.save(update_fields=["status","error_message","updated_at"])
-        return payout
-    account_id=host.razorpay_account_id.strip()
-    if os.getenv("RAZORPAY_ROUTE_ENABLED","false").lower()!="true" or not account_id:
-        payout.status="needs_setup"
-        payout.linked_account_id=account_id
-        payout.amount_paise=amount_paise
-        payout.error_message="Enable Razorpay Route and complete host linked-account/KYC onboarding."
-        payout.save(update_fields=["status","linked_account_id","amount_paise","error_message","updated_at"])
-        if created:
-            notify_user(host,"Host payout setup required",f"Driver payment for booking #{booking.id} is confirmed, but your payout account is not configured yet.","payout_needs_setup",booking)
-        return payout
-    key_id=os.getenv("RAZORPAY_KEY_ID","")
-    key_secret=os.getenv("RAZORPAY_KEY_SECRET","")
-    if not key_id or not key_secret:
-        payout.status="needs_setup"; payout.error_message="Razorpay API credentials are missing."
-        payout.save(update_fields=["status","error_message","updated_at"])
-        return payout
-    payload=json.dumps({"transfers":[{
-        "account":account_id,"amount":amount_paise,"currency":"INR",
-        "notes":{"booking_id":str(booking.id),"plugsy_payment_id":str(payment.id)},
-    }]}).encode()
-    auth=base64.b64encode(f"{key_id}:{key_secret}".encode()).decode()
-    req=urllib.request.Request(
-        f"https://api.razorpay.com/v1/payments/{payment.payment_id}/transfers",
-        data=payload,headers={"Authorization":f"Basic {auth}","Content-Type":"application/json"},method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req,timeout=15) as resp:
-            data=json.loads(resp.read().decode())
-        items=data.get("items") or []
-        transfer=items[0] if items else data
-        transfer_id=transfer.get("id")
-        if not transfer_id:
-            payout.status="needs_reconciliation"
-            payout.error_message="Provider response did not include a transfer ID; reconcile in Razorpay dashboard."
-        else:
-            payout.status="initiated"
-            payout.transfer_id=transfer_id
-            payout.error_message=""
-        payout.linked_account_id=account_id
-        payout.amount_paise=amount_paise
-        payout.save(update_fields=["status","transfer_id","linked_account_id","amount_paise","error_message","updated_at"])
-        if payout.status=="initiated":
-            notify_user(host,"Plugsy host payout initiated",f"A payout of ₹{(Decimal(amount_paise)/100):.2f} was initiated for booking #{booking.id}. Settlement depends on Razorpay Route.","payout_initiated",booking)
-    except urllib.error.HTTPError as exc:
-        detail=exc.read().decode(errors="replace")[:400]
-        payout.status="failed"; payout.error_message=f"Razorpay rejected the transfer: {detail}"
-        payout.save(update_fields=["status","error_message","updated_at"])
-    except (urllib.error.URLError,TimeoutError,ValueError) as exc:
-        # The provider may have accepted a transfer before a network timeout; never auto-retry this case.
-        payout.status="needs_reconciliation"; payout.error_message=f"Check Razorpay dashboard before retrying: {exc}"[:500]
-        payout.save(update_fields=["status","error_message","updated_at"])
-    return payout
 
 def haversine_km(lat1,lon1,lat2,lon2):
     r=6371.0
@@ -262,174 +164,37 @@ class BookingCompleteView(APIView):
         notify_user(booking.driver,"Charging session complete",f"{actual} kWh recorded. Final amount: ₹{total}. Complete payment to leave a review.","session_completed",booking)
         return Response(BookingSerializer(booking,context={"request":request}).data)
 
-class CreatePaymentOrderView(APIView):
-    permission_classes=[permissions.IsAuthenticated]
-    def post(self,request,pk):
-        try: booking=Booking.objects.select_related("charger","driver").get(pk=pk,driver=request.user)
-        except Booking.DoesNotExist: return Response({"detail":"Booking not found."},status=404)
-        if booking.status!="completed" or booking.total_amount is None:
-            raise ValidationError("Payment becomes available after the host records the completed charging session.")
-        if booking.payment_status=="paid":
-            raise ValidationError("This booking has already been paid.")
-        key_id=os.getenv("RAZORPAY_KEY_ID","")
-        key_secret=os.getenv("RAZORPAY_KEY_SECRET","")
-        if not key_id or not key_secret:
-            raise APIException("Online payments are not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.")
-        amount_paise=int((booking.total_amount*100).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
-        if amount_paise < 100: raise ValidationError("The minimum online payment is ₹1.00.")
-        payload=json.dumps({"amount":amount_paise,"currency":"INR","receipt":f"plugsy_booking_{booking.id}","notes":{"booking_id":str(booking.id)}}).encode()
-        auth=base64.b64encode(f"{key_id}:{key_secret}".encode()).decode()
-        req=urllib.request.Request("https://api.razorpay.com/v1/orders",data=payload,headers={"Authorization":f"Basic {auth}","Content-Type":"application/json"},method="POST")
-        try:
-            with urllib.request.urlopen(req,timeout=15) as resp: data=json.loads(resp.read().decode())
-        except (urllib.error.URLError,urllib.error.HTTPError,TimeoutError) as exc:
-            raise APIException(f"Payment provider order creation failed: {exc}")
-        payment,created=Payment.objects.get_or_create(booking=booking,defaults={"order_id":data["id"],"amount_paise":amount_paise})
-        if not created:
-            if payment.status=="paid": raise ValidationError("This booking has already been paid.")
-            payment.order_id=data["id"]; payment.amount_paise=amount_paise; payment.status="created"; payment.save(update_fields=["order_id","amount_paise","status"])
-        return Response({"key_id":key_id,"order_id":data["id"],"amount":amount_paise,"currency":"INR","booking_id":booking.id,"description":booking.charger.title})
+class BookingMarkPaidView(APIView):
+    """Host confirms receipt of offline/manual payment for a completed session."""
+    permission_classes = [permissions.IsAuthenticated]
 
-class VerifyPaymentView(APIView):
-    permission_classes=[permissions.IsAuthenticated]
     @transaction.atomic
-    def post(self,request,pk):
-        try: booking=Booking.objects.select_for_update().select_related("charger").get(pk=pk,driver=request.user)
-        except Booking.DoesNotExist: return Response({"detail":"Booking not found."},status=404)
-        try: payment=Payment.objects.select_for_update().get(booking=booking)
-        except Payment.DoesNotExist: raise ValidationError("Create a payment order first.")
-        payment_id=str(request.data.get("razorpay_payment_id",""))
-        order_id=str(request.data.get("razorpay_order_id",""))
-        signature=str(request.data.get("razorpay_signature",""))
-        if order_id!=payment.order_id: raise ValidationError("Payment order does not match this booking.")
-        secret=os.getenv("RAZORPAY_KEY_SECRET","")
-        if not secret: raise APIException("Payment verification is not configured.")
-        expected=hmac.new(secret.encode(),f"{order_id}|{payment_id}".encode(),hashlib.sha256).hexdigest()
-        if not payment_id or not hmac.compare_digest(expected,signature): raise ValidationError("Payment signature verification failed.")
-        # Verify provider-side status and order association as well as the checkout signature.
-        auth=base64.b64encode(f"{os.getenv('RAZORPAY_KEY_ID','')}:{secret}".encode()).decode()
-        payment_req=urllib.request.Request(
-            f"https://api.razorpay.com/v1/payments/{payment_id}",
-            headers={"Authorization":f"Basic {auth}"},
-            method="GET",
+    def post(self, request, pk):
+        try:
+            booking = Booking.objects.select_for_update().select_related(
+                "charger", "driver"
+            ).get(pk=pk)
+        except Booking.DoesNotExist:
+            return Response({"detail": "Booking not found."}, status=404)
+
+        if booking.charger.host_id != request.user.id:
+            raise PermissionDenied("Only the charger host can confirm payment.")
+        if booking.status != "completed" or booking.total_amount is None:
+            raise ValidationError("Only a completed charging session can be marked as paid.")
+        if booking.payment_status == "paid":
+            raise ValidationError("This booking is already marked as paid.")
+
+        booking.payment_status = "paid"
+        booking.save(update_fields=["payment_status"])
+        notify_user(
+            booking.driver,
+            "Payment marked as received",
+            f"The host confirmed receipt of ₹{booking.total_amount} for {booking.charger.title}.",
+            "payment_received",
+            booking,
         )
-        try:
-            with urllib.request.urlopen(payment_req,timeout=15) as resp:
-                provider_payment=json.loads(resp.read().decode())
-        except (urllib.error.URLError,urllib.error.HTTPError,TimeoutError) as exc:
-            raise APIException(f"Could not verify payment with Razorpay: {exc}")
-        if provider_payment.get("order_id") != payment.order_id:
-            raise ValidationError("Payment does not belong to this order.")
-        if provider_payment.get("status") != "captured":
-            raise ValidationError("Payment is not captured yet. Check again after capture.")
-        if int(provider_payment.get("amount",0)) != payment.amount_paise:
-            raise ValidationError("The captured amount does not match the booking total.")
-        if payment.status!="paid":
-            payment.payment_id=payment_id; payment.signature=signature; payment.status="paid"; payment.paid_at=timezone.now()
-            payment.save(update_fields=["payment_id","signature","status","paid_at"])
-            booking.payment_status="paid"; booking.save(update_fields=["payment_status"])
-            notify_user(booking.charger.host,"Plugsy payment received",f"Payment of ₹{booking.total_amount} for {booking.charger.title} was verified.","payment_received",booking)
-        ensure_host_payout(payment)
-        return Response({"status":"paid","booking_id":booking.id,"amount":str(booking.total_amount)})
+        return Response(BookingSerializer(booking, context={"request": request}).data)
 
-class RazorpayWebhookView(APIView):
-    authentication_classes=[]
-    permission_classes=[permissions.AllowAny]
-    @transaction.atomic
-    def post(self,request):
-        secret=os.getenv("RAZORPAY_WEBHOOK_SECRET","")
-        signature=request.headers.get("X-Razorpay-Signature","")
-        if not secret:
-            raise APIException("Razorpay webhook secret is not configured.")
-        expected=hmac.new(secret.encode(),request.body,hashlib.sha256).hexdigest()
-        if not signature or not hmac.compare_digest(expected,signature):
-            return Response({"detail":"Invalid webhook signature."},status=400)
-        try:
-            event=json.loads(request.body.decode())
-            event_type=event.get("event","")
-        except (ValueError,TypeError):
-            return Response({"detail":"Invalid webhook payload."},status=400)
-
-        if event_type in ["transfer.processed","transfer.settled","transfer.failed","transfer.reversed"]:
-            try:
-                transfer_entity=event["payload"]["transfer"]["entity"]
-                transfer_id=transfer_entity["id"]
-                payout=HostPayout.objects.select_for_update().select_related("payment__booking").get(transfer_id=transfer_id)
-            except (KeyError,HostPayout.DoesNotExist):
-                return Response({"received":True,"ignored":True})
-            if event_type in ["transfer.processed","transfer.settled"]:
-                payout.status="transferred"; payout.error_message=""
-            else:
-                payout.status="failed"; payout.error_message=f"Razorpay transfer event: {event_type}"[:500]
-            payout.save(update_fields=["status","error_message","updated_at"])
-            notify_user(payout.host,"Plugsy payout update",f"Your payout for booking #{payout.payment.booking_id} is now {payout.status}.","payout_update",payout.payment.booking)
-            return Response({"received":True})
-
-        if event_type not in ["payment.captured","payment.failed"]:
-            return Response({"received":True,"ignored":True})
-        try:
-            entity=event["payload"]["payment"]["entity"]
-            order_id=entity["order_id"]
-            payment_id=entity["id"]
-        except (KeyError,TypeError):
-            return Response({"detail":"Invalid payment webhook payload."},status=400)
-        try:
-            payment=Payment.objects.select_for_update().select_related("booking__charger","booking__driver").get(order_id=order_id)
-        except Payment.DoesNotExist:
-            return Response({"received":True,"ignored":True})
-        if int(entity.get("amount",0)) != payment.amount_paise:
-            return Response({"detail":"Webhook amount mismatch."},status=400)
-        booking=payment.booking
-        if event_type=="payment.captured" or entity.get("status")=="captured":
-            if payment.status!="paid":
-                payment.payment_id=payment_id
-                payment.status="paid"
-                payment.paid_at=timezone.now()
-                payment.save(update_fields=["payment_id","status","paid_at"])
-                booking.payment_status="paid"
-                booking.save(update_fields=["payment_status"])
-                notify_user(booking.charger.host,"Plugsy payment received",f"Payment of ₹{booking.total_amount} for {booking.charger.title} was verified.","payment_received",booking)
-            ensure_host_payout(payment)
-        elif event_type=="payment.failed" and payment.status!="paid":
-            payment.payment_id=payment_id
-            payment.status="failed"
-            payment.save(update_fields=["payment_id","status"])
-            booking.payment_status="failed"
-            booking.save(update_fields=["payment_status"])
-        return Response({"received":True})
-
-class DeviceTokenView(APIView):
-    permission_classes=[permissions.IsAuthenticated]
-    def post(self,request):
-        token=str(request.data.get("token","")).strip()
-        platform=str(request.data.get("platform","unknown"))[:20]
-        if len(token)<20: raise ValidationError({"token":"A valid FCM device token is required."})
-        DeviceToken.objects.update_or_create(token=token,defaults={"user":request.user,"platform":platform})
-        return Response({"registered":True},status=status.HTTP_200_OK)
-
-class HostPayoutRetryView(APIView):
-    permission_classes=[permissions.IsAdminUser]
-    @transaction.atomic
-    def post(self,request,pk):
-        try: payout=HostPayout.objects.select_for_update().select_related("payment__booking__charger").get(pk=pk)
-        except HostPayout.DoesNotExist: return Response({"detail":"Payout not found."},status=404)
-        if payout.status=="needs_reconciliation":
-            raise ValidationError("This payout may have been accepted by Razorpay. Reconcile it in the provider dashboard before retrying.")
-        if payout.status in ["initiated","transferred"]:
-            raise ValidationError("This payout has already been initiated.")
-        result=ensure_host_payout(payout.payment,force_retry=True)
-        return Response({"id":result.id,"booking_id":result.payment.booking_id,"amount_paise":result.amount_paise,"status":result.status,"transfer_id":result.transfer_id,"error_message":result.error_message})
-
-class HostPayoutListView(APIView):
-    permission_classes=[permissions.IsAuthenticated]
-    def get(self,request):
-        payouts=HostPayout.objects.filter(host=request.user).select_related("payment__booking").order_by("-created_at")[:100]
-        return Response([{
-            "id":p.id,"booking_id":p.payment.booking_id,"amount_paise":p.amount_paise,
-            "amount_rupees":str((Decimal(p.amount_paise)/100).quantize(Decimal("0.01"))),
-            "status":p.status,"transfer_id":p.transfer_id,"error_message":p.error_message,
-            "created_at":p.created_at.isoformat(),"updated_at":p.updated_at.isoformat(),
-        } for p in payouts])
 
 class NotificationListView(APIView):
     permission_classes=[permissions.IsAuthenticated]
