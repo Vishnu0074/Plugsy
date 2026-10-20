@@ -1,10 +1,10 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from .models import User, Charger, Booking, Payment, DeviceToken, AppNotification, Review
+from .models import User, Charger, Booking, Payment, HostPayout, DeviceToken, AppNotification, Review
 
 @admin.register(User)
 class PlugsyUserAdmin(UserAdmin):
-    fieldsets = UserAdmin.fieldsets + (("Plugsy", {"fields": ("wants_to_host",)}),)
+    fieldsets = UserAdmin.fieldsets + (("Plugsy", {"fields": ("wants_to_host","razorpay_account_id")}),)
     list_display = ("username","email","wants_to_host","is_staff")
 
 @admin.register(Charger)
@@ -23,6 +23,13 @@ class PaymentAdmin(admin.ModelAdmin):
     list_display = ("booking","order_id","payment_id","amount_paise","status","created_at")
     list_filter = ("status","provider")
     readonly_fields = ("order_id","payment_id","amount_paise","signature","created_at","paid_at")
+
+@admin.register(HostPayout)
+class HostPayoutAdmin(admin.ModelAdmin):
+    list_display = ("host","payment","amount_paise","status","transfer_id","updated_at")
+    list_filter = ("status",)
+    search_fields = ("host__username","linked_account_id","transfer_id")
+    readonly_fields = ("payment","host","linked_account_id","transfer_id","amount_paise","created_at","updated_at","error_message")
 
 @admin.register(DeviceToken)
 class DeviceTokenAdmin(admin.ModelAdmin):
