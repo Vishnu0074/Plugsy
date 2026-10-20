@@ -338,48 +338,56 @@ class RazorpayWebhookView(APIView):
             return Response({"detail":"Invalid webhook signature."},status=400)
         try:
             event=json.loads(request.body.decode())
+            event_type=event.get("event","")
+        except (ValueError,TypeError):
+            return Response({"detail":"Invalid webhook payload."},status=400)
+
+        if event_type in ["transfer.processed","transfer.settled","transfer.failed","transfer.reversed"]:
+            try:
+                transfer_entity=event["payload"]["transfer"]["entity"]
+                transfer_id=transfer_entity["id"]
+                payout=HostPayout.objects.select_for_update().select_related("payment__booking").get(transfer_id=transfer_id)
+            except (KeyError,HostPayout.DoesNotExist):
+                return Response({"received":True,"ignored":True})
+            if event_type in ["transfer.processed","transfer.settled"]:
+                payout.status="settled"; payout.error_message=""
+            else:
+                payout.status="failed"; payout.error_message=f"Razorpay transfer event: {event_type}"[:500]
+            payout.save(update_fields=["status","error_message","updated_at"])
+            notify_user(payout.host,"Plugsy payout update",f"Your payout for booking #{payout.payment.booking_id} is now {payout.status}.","payout_update",payout.payment.booking)
+            return Response({"received":True})
+
+        if event_type not in ["payment.captured","payment.failed"]:
+            return Response({"received":True,"ignored":True})
+        try:
             entity=event["payload"]["payment"]["entity"]
             order_id=entity["order_id"]
             payment_id=entity["id"]
-        except (ValueError,KeyError,TypeError):
-            return Response({"detail":"Invalid webhook payload."},status=400)
+        except (KeyError,TypeError):
+            return Response({"detail":"Invalid payment webhook payload."},status=400)
         try:
-            payment=Payment.objects.select_for_update().select_related("booking__charger").get(order_id=order_id)
+            payment=Payment.objects.select_for_update().select_related("booking__charger","booking__driver").get(order_id=order_id)
         except Payment.DoesNotExist:
-            # Unknown orders should not be retried forever by the provider.
             return Response({"received":True,"ignored":True})
         if int(entity.get("amount",0)) != payment.amount_paise:
             return Response({"detail":"Webhook amount mismatch."},status=400)
-        if event.get("event")=="payment.captured" or entity.get("status")=="captured":
+        booking=payment.booking
+        if event_type=="payment.captured" or entity.get("status")=="captured":
             if payment.status!="paid":
                 payment.payment_id=payment_id
                 payment.status="paid"
                 payment.paid_at=timezone.now()
                 payment.save(update_fields=["payment_id","status","paid_at"])
-                booking=payment.booking
                 booking.payment_status="paid"
                 booking.save(update_fields=["payment_status"])
                 notify_user(booking.charger.host,"Plugsy payment received",f"Payment of ₹{booking.total_amount} for {booking.charger.title} was verified.","payment_received",booking)
             ensure_host_payout(payment)
-        elif event.get("event") in ["transfer.processed","transfer.settled","transfer.failed","transfer.reversed"]:
-            try:
-                transfer_entity=event["payload"]["transfer"]["entity"]
-                transfer_id=transfer_entity["id"]
-                payout=HostPayout.objects.select_for_update().get(transfer_id=transfer_id)
-            except (KeyError,HostPayout.DoesNotExist):
-                return Response({"received":True,"ignored":True})
-            if event.get("event") in ["transfer.processed","transfer.settled"]:
-                payout.status="settled"; payout.error_message=""
-            else:
-                payout.status="failed"; payout.error_message=f"Razorpay transfer event: {event.get('event')}"[:500]
-            payout.save(update_fields=["status","error_message","updated_at"])
-            notify_user(payout.host,"Plugsy payout update",f"Your payout for booking #{payout.payment.booking_id} is now {payout.status}.","payout_update",payout.payment.booking)
-        elif event.get("event")=="payment.failed" and payment.status!="paid":
+        elif event_type=="payment.failed" and payment.status!="paid":
             payment.payment_id=payment_id
             payment.status="failed"
             payment.save(update_fields=["payment_id","status"])
-            payment.booking.payment_status="failed"
-            payment.booking.save(update_fields=["payment_status"])
+            booking.payment_status="failed"
+            booking.save(update_fields=["payment_status"])
         return Response({"received":True})
 
 class DeviceTokenView(APIView):
