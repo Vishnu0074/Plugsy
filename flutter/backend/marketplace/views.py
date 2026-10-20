@@ -106,3 +106,21 @@ class ReviewListCreateView(generics.ListCreateAPIView):
         charger_id=self.request.query_params.get("charger")
         return qs.filter(charger_id=charger_id) if charger_id else qs
     def perform_create(self,serializer): serializer.save(author=self.request.user)
+
+
+class BookingCompleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    @transaction.atomic
+    def post(self, request, pk):
+        try:
+            booking = Booking.objects.select_for_update().select_related("charger").get(pk=pk)
+        except Booking.DoesNotExist:
+            return Response({"detail":"Booking not found."}, status=404)
+        if booking.charger.host_id != request.user.id:
+            raise PermissionDenied("Only the charger host can mark a session completed.")
+        if booking.status != "accepted":
+            raise ValidationError("Only an accepted booking can be completed.")
+        # This confirms a host-reported completion, not independently metered energy or payment.
+        booking.status = "completed"
+        booking.save(update_fields=["status"])
+        return Response(BookingSerializer(booking).data)
