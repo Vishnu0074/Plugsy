@@ -1,0 +1,197 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'dart:convert';
+
+const apiBase = String.fromEnvironment('PLUGSY_API_BASE_URL', defaultValue: 'http://10.0.2.2:8000/api');
+
+void main() => runApp(ChangeNotifierProvider(create: (_) => PlugsyState(), child: const PlugsyApp()));
+
+class PlugsyState extends ChangeNotifier {
+  String? access;
+  bool loading = true;
+  List<dynamic> chargers = [];
+  String? error;
+  Future<void> init() async {
+    final p = await SharedPreferences.getInstance();
+    access = p.getString('access');
+    loading = false;
+    notifyListeners();
+    if (access != null) await loadChargers();
+  }
+  PlugsyState() { init(); }
+  Future<dynamic> request(String path, {String method = 'GET', Map<String,dynamic>? body, bool auth = true}) async {
+    final headers = <String,String>{'Content-Type':'application/json'};
+    if (auth && access != null) headers['Authorization'] = 'Bearer $access';
+    final uri = Uri.parse('$apiBase$path');
+    late http.Response res;
+    if (method == 'POST') {
+      res = await http.post(uri, headers: headers, body: jsonEncode(body ?? {}));
+    } else { res = await http.get(uri, headers: headers); }
+    dynamic data;
+    try { data = jsonDecode(res.body); } catch (_) { data = {'detail': res.body}; }
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      final detail = data is Map ? (data['detail'] ?? data.values.first) : data;
+      throw Exception(detail.toString());
+    }
+    return data;
+  }
+  Future<void> saveTokens(Map<String,dynamic> data) async {
+    access = data['access']?.toString();
+    final p = await SharedPreferences.getInstance();
+    if (access != null) await p.setString('access', access!);
+    notifyListeners();
+    await loadChargers();
+  }
+  Future<void> auth({required bool register, required String identity, required String password, String email = '', bool host = false}) async {
+    final data = await request(register ? '/auth/register/' : '/auth/login/', method:'POST', auth:false,
+      body: register ? {'email':email,'username':identity,'password':password,'wants_to_host':host} : {'username':identity,'password':password});
+    await saveTokens(data as Map<String,dynamic>);
+  }
+  Future<void> loadChargers({double? lat, double? lng}) async {
+    try {
+      error = null;
+      final q = lat != null && lng != null ? '?lat=$lat&lng=$lng' : '';
+      final d = await request('/chargers/$q');
+      chargers = d is List ? d : (d['results'] as List? ?? []);
+    } catch(e) { error = e.toString(); }
+    notifyListeners();
+  }
+  Future<void> logout() async {
+    access = null; chargers = [];
+    final p = await SharedPreferences.getInstance(); await p.remove('access'); notifyListeners();
+  }
+}
+
+class PlugsyApp extends StatelessWidget {
+  const PlugsyApp({super.key});
+  @override Widget build(BuildContext context) => MaterialApp(
+    title:'Plugsy', debugShowCheckedModeBanner:false,
+    theme: ThemeData(useMaterial3:true, colorScheme:ColorScheme.fromSeed(seedColor:const Color(0xFFB7F36B)), scaffoldBackgroundColor:const Color(0xFFF7F8F5)),
+    home: Consumer<PlugsyState>(builder:(context,s,_) => s.loading ? const Scaffold(body:Center(child:CircularProgressIndicator())) : s.access == null ? const AuthPage() : const HomePage()),
+  );
+}
+
+class AuthPage extends StatefulWidget {
+  const AuthPage({super.key});
+  @override State<AuthPage> createState()=>_AuthPageState();
+}
+class _AuthPageState extends State<AuthPage> {
+  final form=GlobalKey<FormState>();
+  final identity=TextEditingController(), email=TextEditingController(), password=TextEditingController();
+  bool register=false, host=false, busy=false, obscure=true;
+  @override void dispose(){identity.dispose();email.dispose();password.dispose();super.dispose();}
+  Future<void> submit() async {
+    if(!form.currentState!.validate()) return;
+    setState(()=>busy=true);
+    try {
+      await context.read<PlugsyState>().auth(register:register,identity:identity.text.trim(),password:password.text,email:email.text.trim(),host:host);
+    } catch(e) { if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString().replaceFirst('Exception: ','')))); }
+    finally { if(mounted) setState(()=>busy=false); }
+  }
+  @override Widget build(BuildContext context)=>Scaffold(body:SafeArea(child:Center(child:SingleChildScrollView(padding:const EdgeInsets.all(24),child:ConstrainedBox(constraints:const BoxConstraints(maxWidth:460),child:Form(key:form,child:Column(crossAxisAlignment:CrossAxisAlignment.stretch,children:[
+    Container(width:72,height:72,alignment:Alignment.center,decoration:BoxDecoration(color:const Color(0xFFB7F36B),borderRadius:BorderRadius.circular(22)),child:const Icon(Icons.bolt,size:42)),
+    const SizedBox(height:24),const Text('Plugsy',style:TextStyle(fontSize:36,fontWeight:FontWeight.w900)),
+    Text(register?'Join the community-powered charging network.':'Find a charge. Share the power.',style:const TextStyle(color:Colors.black54)),
+    const SizedBox(height:26),
+    if(register) ...[TextFormField(controller:email,keyboardType:TextInputType.emailAddress,decoration:const InputDecoration(labelText:'Email address',prefixIcon:Icon(Icons.mail_outline)),validator:(v)=>v==null||!v.contains('@')?'Enter a valid email':null),const SizedBox(height:12)],
+    TextFormField(controller:identity,decoration:InputDecoration(labelText:register?'Choose a username':'Username or email',prefixIcon:const Icon(Icons.person_outline)),validator:(v)=>v==null||v.trim().length<3?'Enter at least 3 characters':null),
+    const SizedBox(height:12),
+    TextFormField(controller:password,obscureText:obscure,decoration:InputDecoration(labelText:'Password',prefixIcon:const Icon(Icons.lock_outline),suffixIcon:IconButton(onPressed:()=>setState(()=>obscure=!obscure),icon:Icon(obscure?Icons.visibility:Icons.visibility_off))),validator:(v)=>v==null||v.length<8?'Use at least 8 characters':null),
+    if(register) ...[const SizedBox(height:16),Container(padding:const EdgeInsets.all(12),decoration:BoxDecoration(color:Colors.white,borderRadius:BorderRadius.circular(16)),child:SwitchListTile(value:host,onChanged:(v)=>setState(()=>host=v),title:const Text('I have a charger to share',style:TextStyle(fontWeight:FontWeight.bold)),subtitle:const Text('Let nearby EV drivers book it and earn from charging.'),contentPadding:EdgeInsets.zero))],
+    const SizedBox(height:20),FilledButton(onPressed:busy?null:submit,child:Padding(padding:const EdgeInsets.all(14),child:Text(busy?'Please wait…':register?'Create account':'Log in'))),
+    TextButton(onPressed:()=>setState(()=>register=!register),child:Text(register?'Already registered? Log in':'New to Plugsy? Create an account')),
+  ])))))));
+}
+
+class HomePage extends StatefulWidget { const HomePage({super.key}); @override State<HomePage> createState()=>_HomePageState(); }
+class _HomePageState extends State<HomePage> {
+  int tab=0; List<dynamic> bookings=[]; bool busy=false;
+  Future<void> nearby() async {
+    double? lat,lng;
+    try {
+      if(await Geolocator.isLocationServiceEnabled()){
+        var p=await Geolocator.checkPermission();
+        if(p==LocationPermission.denied)p=await Geolocator.requestPermission();
+        if(p==LocationPermission.always||p==LocationPermission.whileInUse){final pos=await Geolocator.getCurrentPosition();lat=pos.latitude;lng=pos.longitude;}
+      }
+    }catch(_){}
+    if(mounted) await context.read<PlugsyState>().loadChargers(lat:lat,lng:lng);
+  }
+  Future<void> loadBookings() async {
+    setState(()=>busy=true);
+    try { final d=await context.read<PlugsyState>().request('/bookings/'); bookings=d is List?d:(d['results'] as List? ?? []); }
+    catch(e){if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString())));}
+    finally{if(mounted)setState(()=>busy=false);}
+  }
+  @override void initState(){super.initState();WidgetsBinding.instance.addPostFrameCallback((_)=>nearby());}
+  @override Widget build(BuildContext context)=>Scaffold(
+    appBar:AppBar(title:const Text('Plugsy',style:TextStyle(fontSize:25,fontWeight:FontWeight.w900)),actions:[IconButton(onPressed:()=>context.read<PlugsyState>().logout(),icon:const Icon(Icons.logout))]),
+    body:IndexedStack(index:tab,children:[discover(),requests()]),
+    bottomNavigationBar:NavigationBar(selectedIndex:tab,onDestinationSelected:(v){setState(()=>tab=v);if(v==1)loadBookings();},destinations:const[NavigationDestination(icon:Icon(Icons.explore_outlined),label:'Discover'),NavigationDestination(icon:Icon(Icons.inbox_outlined),label:'Requests')]),
+    floatingActionButton:tab==0?FloatingActionButton.extended(onPressed:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>const HostPage())).then((v){if(v==true)nearby();}),icon:const Icon(Icons.add),label:const Text('List a charger')):null,
+  );
+  Widget discover()=>Consumer<PlugsyState>(builder:(context,s,_)=>RefreshIndicator(onRefresh:nearby,child:ListView(padding:const EdgeInsets.all(16),children:[
+    Container(padding:const EdgeInsets.all(22),decoration:BoxDecoration(color:const Color(0xFF17231A),borderRadius:BorderRadius.circular(24)),child:const Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text('Low battery?',style:TextStyle(color:Color(0xFFB7F36B),fontSize:26,fontWeight:FontWeight.w900)),SizedBox(height:6),Text('Find a nearby charger shared by the community.',style:TextStyle(color:Colors.white70))])),
+    const SizedBox(height:16),Row(children:[const Expanded(child:Text('Chargers near you',style:TextStyle(fontSize:20,fontWeight:FontWeight.w800))),IconButton(onPressed:nearby,icon:const Icon(Icons.refresh))]),
+    OutlinedButton.icon(onPressed:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>ChargerMap(chargers:s.chargers))),icon:const Icon(Icons.map_outlined),label:const Text('View on map')),
+    if(s.error!=null)Text('API error: ${s.error}'),
+    if(s.chargers.isEmpty&&!s.loading)const Padding(padding:EdgeInsets.all(18),child:Text('No published chargers found yet. Try again or become the first host in your area.')),
+    if(s.loading)const Center(child:CircularProgressIndicator()),
+    ...s.chargers.map((c)=>Card(child:ListTile(leading:const CircleAvatar(backgroundColor:Color(0xFFEAF8D9),child:Icon(Icons.ev_station,color:Colors.black)),title:Text('${c['title']}',style:const TextStyle(fontWeight:FontWeight.bold)),subtitle:Text('${c['connector_type']} · ${c['power_kw']} kW · ★ ${c['average_rating']??0} (${c['review_count']??0})'),trailing:Text('₹${c['price_per_kwh']}\n/kWh',textAlign:TextAlign.end,style:const TextStyle(fontWeight:FontWeight.bold)),onTap:()=>requestCharge(c))),
+  ])));
+  Future<void> requestCharge(dynamic c) async {
+    final ok=await showModalBottomSheet<bool>(context:context,builder:(ctx)=>Padding(padding:const EdgeInsets.all(24),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.start,children:[Text('${c['title']}',style:Theme.of(context).textTheme.titleLarge),Text('₹${c['price_per_kwh']} / kWh · ${c['connector_type']}'),const SizedBox(height:12),const Text('Request a booking. The host must accept before you travel. Phone ringing requires push notification setup.'),const SizedBox(height:12),FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Request a charge'))])));
+    if(ok!=true)return;
+    try{final d=await context.read<PlugsyState>().request('/bookings/',method:'POST',body:{'charger':c['id']});if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Request sent: ${d['status']}')));}
+    catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString())));}
+  }
+  Widget requests()=>RefreshIndicator(onRefresh:loadBookings,child:ListView(padding:const EdgeInsets.all(16),children:[
+    const Text('Booking requests',style:TextStyle(fontSize:22,fontWeight:FontWeight.w800)),
+    if(busy)const Center(child:CircularProgressIndicator()),
+    if(!busy&&bookings.isEmpty)const Text('Booking requests and sessions will appear here.'),
+    ...bookings.map((b)=>Card(child:ListTile(title:Text('Booking #${b['id']} · ${b['charger_title']??'Charger'}'),subtitle:Text('Status: ${b['status']} · Driver: ${b['driver_username']??''}'),trailing:b['status']=='pending'?PopupMenuButton<bool>(onSelected:(accept)=>respond(b['id'],accept),itemBuilder:(_)=>const[PopupMenuItem(value:true,child:Text('Accept')),PopupMenuItem(value:false,child:Text('Decline'))]):null))),
+  ]));
+  Future<void> respond(dynamic id,bool accept)async{try{await context.read<PlugsyState>().request('/bookings/$id/respond/',method:'POST',body:{'accept':accept});await loadBookings();}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString())));}}
+}
+
+class ChargerMap extends StatelessWidget {
+  const ChargerMap({super.key,required this.chargers}); final List<dynamic> chargers;
+  @override Widget build(BuildContext context)=>Scaffold(appBar:AppBar(title:const Text('Chargers nearby')),body:FlutterMap(options:const MapOptions(initialCenter:LatLng(9.9312,76.2673),initialZoom:11),children:[
+    TileLayer(urlTemplate:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',userAgentPackageName:'com.plugsy.app'),
+    MarkerLayer(markers:chargers.map((c)=>Marker(point:LatLng(double.parse(c['latitude'].toString()),double.parse(c['longitude'].toString())),width:48,height:48,child:GestureDetector(onTap:()=>showModalBottomSheet(context:context,builder:(_)=>Padding(padding:const EdgeInsets.all(20),child:Text('${c['title']} · ₹${c['price_per_kwh']}/kWh · ★ ${c['average_rating']??0}'))),child:const Icon(Icons.location_pin,color:Colors.green,size:40)))).toList()),
+    const RichAttributionWidget(attributions:[TextSourceAttribution('© OpenStreetMap contributors')]),
+  ]));
+}
+
+class HostPage extends StatefulWidget { const HostPage({super.key}); @override State<HostPage> createState()=>_HostPageState(); }
+class _HostPageState extends State<HostPage>{
+ final form=GlobalKey<FormState>();final title=TextEditingController(text:'Home EV Charger'),price=TextEditingController(text:'12'),power=TextEditingController(text:'7.4'),address=TextEditingController();
+ final connectors=['Type 2','CCS2','CHAdeMO','Bharat AC-001','Bharat DC-001','3-pin socket (verification required)'];
+ String connector='Type 2';LatLng? point;bool safety=false,available=true,busy=false;
+ @override void dispose(){title.dispose();price.dispose();power.dispose();address.dispose();super.dispose();}
+ Future<void> locate()async{try{if(!await Geolocator.isLocationServiceEnabled())throw Exception('Enable location services.');var p=await Geolocator.checkPermission();if(p==LocationPermission.denied)p=await Geolocator.requestPermission();if(p==LocationPermission.denied||p==LocationPermission.deniedForever)throw Exception('Location permission is needed.');final pos=await Geolocator.getCurrentPosition();setState(()=>point=LatLng(pos.latitude,pos.longitude));}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString())));}}
+ Future<void> publish()async{if(!form.currentState!.validate())return;if(point==null||!safety){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Select a location and confirm charger safety.')));return;}setState(()=>busy=true);try{await context.read<PlugsyState>().request('/chargers/',method:'POST',body:{'title':title.text.trim(),'latitude':point!.latitude,'longitude':point!.longitude,'price_per_kwh':double.parse(price.text),'power_kw':double.parse(power.text),'connector_type':connector,'approximate_address':address.text.trim(),'is_available':available,'is_published':true,'safety_confirmed':true});if(mounted)Navigator.pop(context,true);}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString().replaceFirst('Exception: ',''))));}finally{if(mounted)setState(()=>busy=false);}}
+ @override Widget build(BuildContext context)=>Scaffold(appBar:AppBar(title:const Text('List your charger')),body:Form(key:form,child:ListView(padding:const EdgeInsets.all(20),children:[
+ const Text('Make your charger available to nearby EV drivers.',style:TextStyle(color:Colors.black54)),const SizedBox(height:16),
+ TextFormField(controller:title,decoration:const InputDecoration(labelText:'Charger name'),validator:(v)=>v==null||v.trim().isEmpty?'Required':null),const SizedBox(height:12),
+ DropdownButtonFormField<String>(value:connector,decoration:const InputDecoration(labelText:'Connector type'),items:connectors.map((x)=>DropdownMenuItem(value:x,child:Text(x))).toList(),onChanged:(v)=>setState(()=>connector=v??connector)),const SizedBox(height:12),
+ TextFormField(controller:power,keyboardType:TextInputType.number,decoration:const InputDecoration(labelText:'Charger power (kW)'),validator:(v)=>double.tryParse(v??'')==null||double.parse(v!)<=0?'Enter valid kW':null),const SizedBox(height:12),
+ TextFormField(controller:price,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'Your price per kWh (₹)'),validator:(v)=>double.tryParse(v??'')==null||double.parse(v!)<=0?'Enter a valid price':null),const SizedBox(height:8),
+ const Text('State electricity tariffs can be displayed as a reference after official tariff data is configured. This field is your own rental price, not a verified live utility tariff.',style:TextStyle(color:Colors.black54,fontSize:12)),const SizedBox(height:12),
+ TextFormField(controller:address,decoration:const InputDecoration(labelText:'Area / directions (public-safe)')),
+ const SizedBox(height:12),OutlinedButton.icon(onPressed:locate,icon:const Icon(Icons.my_location),label:const Text('Use current location')),
+ OutlinedButton.icon(onPressed:()async{final result=await Navigator.push<LatLng>(context,MaterialPageRoute(builder:(_)=>PickMap(initial:point)));if(result!=null)setState(()=>point=result);},icon:const Icon(Icons.map_outlined),label:const Text('Pick exact location on map')),
+ if(point!=null)Text('Pin: ${point!.latitude.toStringAsFixed(5)}, ${point!.longitude.toStringAsFixed(5)}'),
+ SwitchListTile(value:available,onChanged:(v)=>setState(()=>available=v),title:const Text('Available for booking')),
+ CheckboxListTile(value:safety,onChanged:(v)=>setState(()=>safety=v??false),title:const Text('I am authorized to share this charger and confirm its safe installation.'),controlAffinity:ListTileControlAffinity.leading),
+ const SizedBox(height:10),FilledButton.icon(onPressed:busy?null:publish,icon:const Icon(Icons.public),label:Padding(padding:const EdgeInsets.all(14),child:Text(busy?'Publishing…':'Go live on the map'))),
+ ])));
+}
+class PickMap extends StatefulWidget{const PickMap({super.key,this.initial});final LatLng? initial;@override State<PickMap> createState()=>_PickMapState();}
+class _PickMapState extends State<PickMap>{late LatLng point;@override void initState(){super.initState();point=widget.initial??const LatLng(9.9312,76.2673);}
+ @override Widget build(BuildContext context)=>Scaffold(appBar:AppBar(title:const Text('Pick charger location'),actions:[TextButton(onPressed:()=>Navigator.pop(context,point),child:const Text('Confirm'))]),body:FlutterMap(options:MapOptions(initialCenter:point,initialZoom:14,onTap:(_,p)=>setState(()=>point=p)),children:[TileLayer(urlTemplate:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',userAgentPackageName:'com.plugsy.app'),MarkerLayer(markers:[Marker(point:point,width:48,height:48,child:const Icon(Icons.location_pin,color:Colors.red,size:42))]),const RichAttributionWidget(attributions:[TextSourceAttribution('© OpenStreetMap contributors')])]),floatingActionButton:FloatingActionButton.extended(onPressed:()=>Navigator.pop(context,point),icon:const Icon(Icons.check),label:const Text('Use this location')));}
