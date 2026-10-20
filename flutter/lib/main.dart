@@ -6,10 +6,13 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'dart:convert';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:razorpay_flutter/razorpay_flutter.dart';
 
 const apiBase = String.fromEnvironment('PLUGSY_API_BASE_URL', defaultValue: 'http://10.0.2.2:8000/api');
 
-void main() => runApp(ChangeNotifierProvider(create: (_) => PlugsyState(), child: const PlugsyApp()));
+Future<void> main() async { WidgetsFlutterBinding.ensureInitialized(); try { await Firebase.initializeApp(); } catch (_) { /* Add Firebase platform config to enable push notifications. */ } runApp(ChangeNotifierProvider(create: (_) => PlugsyState(), child: const PlugsyApp())); }
 
 class PlugsyState extends ChangeNotifier {
   String? access;
@@ -45,7 +48,19 @@ class PlugsyState extends ChangeNotifier {
     final p = await SharedPreferences.getInstance();
     if (access != null) await p.setString('access', access!);
     notifyListeners();
+    await _registerPushToken();
     await loadChargers();
+  }
+  Future<void> _registerPushToken() async {
+    try {
+      if (Firebase.apps.isEmpty || access == null) return;
+      await FirebaseMessaging.instance.requestPermission(alert: true, badge: true, sound: true);
+      final token = await FirebaseMessaging.instance.getToken();
+      if (token != null) await request('/devices/register/', method: 'POST', body: {'token': token, 'platform': 'mobile'});
+      FirebaseMessaging.instance.onTokenRefresh.listen((token) {
+        request('/devices/register/', method: 'POST', body: {'token': token, 'platform': 'mobile'}).catchError((_) => <String,dynamic>{});
+      });
+    } catch (_) { /* The app remains usable without Firebase configuration. */ }
   }
   Future<void> auth({required bool register, required String identity, required String password, String email = '', bool host = false}) async {
     final data = await request(register ? '/auth/register/' : '/auth/login/', method:'POST', auth:false,
@@ -60,6 +75,10 @@ class PlugsyState extends ChangeNotifier {
       chargers = d is List ? d : (d['results'] as List? ?? []);
     } catch(e) { error = e.toString(); }
     notifyListeners();
+  }
+  Future<List<dynamic>> loadNotifications() async {
+    final data = await request('/notifications/');
+    return data is List ? data : (data['results'] as List? ?? []);
   }
   Future<void> logout() async {
     access = null; chargers = [];
@@ -110,7 +129,7 @@ class _AuthPageState extends State<AuthPage> {
 
 class HomePage extends StatefulWidget { const HomePage({super.key}); @override State<HomePage> createState()=>_HomePageState(); }
 class _HomePageState extends State<HomePage> {
-  int tab=0; List<dynamic> bookings=[]; bool busy=false; LatLng? userPoint;
+  int tab=0; List<dynamic> bookings=[]; bool busy=false; LatLng? userPoint; late Razorpay _razorpay; int? _paymentBookingId;
   Future<void> nearby() async {
     double? lat,lng;
     try {
@@ -128,9 +147,56 @@ class _HomePageState extends State<HomePage> {
     catch(e){if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString())));}
     finally{if(mounted)setState(()=>busy=false);}
   }
-  @override void initState(){super.initState();WidgetsBinding.instance.addPostFrameCallback((_)=>nearby());}
+  @override void initState(){super.initState();_razorpay=Razorpay();_razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS,_paymentSuccess);_razorpay.on(Razorpay.EVENT_PAYMENT_ERROR,_paymentError);_razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET,_externalWallet);WidgetsBinding.instance.addPostFrameCallback((_)=>nearby());}
+  @override void dispose(){_razorpay.clear();super.dispose();}
+  void _paymentSuccess(PaymentSuccessResponse response) async {
+    final id=_paymentBookingId;
+    if(id==null)return;
+    try {
+      await context.read<PlugsyState>().request('/bookings/$id/verify-payment/',method:'POST',body:{'razorpay_payment_id':response.paymentId,'razorpay_order_id':response.orderId,'razorpay_signature':response.signature});
+      if(mounted){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Payment verified successfully.')));await loadBookings();}
+    } catch(e) { if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Payment verification failed: $e'))); }
+    finally {_paymentBookingId=null;}
+  }
+  void _paymentError(PaymentFailureResponse response){_paymentBookingId=null;if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Payment was not completed: ${response.message??response.code}')));}
+  void _externalWallet(ExternalWalletResponse response){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('External wallet selected: ${response.walletName??'wallet'}')));}
+  Future<void> payForBooking(dynamic booking) async {
+    try {
+      final id=booking['id'] as int;
+      final order=await context.read<PlugsyState>().request('/bookings/$id/payment-order/',method:'POST');
+      _paymentBookingId=id;
+      _razorpay.open({'key':order['key_id'],'amount':order['amount'],'currency':order['currency'],'name':'Plugsy','order_id':order['order_id'],'description':'EV charging session','prefill':{'email':''},'theme':{'color':'#B7F36B'}});
+    } catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString().replaceFirst('Exception: ',''))));}
+  }
+  Future<void> markStarted(dynamic booking) async {
+    try { await context.read<PlugsyState>().request('/bookings/${booking['id']}/start/',method:'POST'); await loadBookings(); }
+    catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString())));}
+  }
+  Future<void> completeSession(dynamic booking) async {
+    final input=TextEditingController();
+    final kwh=await showDialog<String>(context:context,builder:(ctx)=>AlertDialog(title:const Text('Complete charging session'),content:TextField(controller:input,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'Measured energy (kWh)',hintText:'e.g. 12.5')),actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,input.text.trim()),child:const Text('Complete'))]));
+    if(kwh==null)return;
+    try { await context.read<PlugsyState>().request('/bookings/${booking['id']}/complete/',method:'POST',body:{'actual_kwh':double.parse(kwh)}); await loadBookings(); }
+    catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString().replaceFirst('Exception: ',''))));}
+    finally{input.dispose();}
+  }
+  Future<void> leaveReview(dynamic booking) async {
+    int rating=5; final comment=TextEditingController();
+    final result=await showDialog<bool>(context:context,builder:(ctx)=>StatefulBuilder(builder:(ctx,setDialog)=>AlertDialog(title:const Text('Rate your charging experience'),content:Column(mainAxisSize:MainAxisSize.min,children:[DropdownButtonFormField<int>(value:rating,decoration:const InputDecoration(labelText:'Rating'),items:[5,4,3,2,1].map((v)=>DropdownMenuItem(value:v,child:Text('$v stars'))).toList(),onChanged:(v)=>setDialog(()=>rating=v??5)),const SizedBox(height:12),TextField(controller:comment,maxLines:3,decoration:const InputDecoration(labelText:'Review (optional)'))]),actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Submit review'))])));
+    if(result!=true){comment.dispose();return;}
+    try { await context.read<PlugsyState>().request('/reviews/',method:'POST',body:{'charger':booking['charger'],'booking':booking['id'],'rating':rating,'comment':comment.text.trim()}); if(mounted){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Review submitted. Thank you!')));await loadBookings();} }
+    catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString().replaceFirst('Exception: ',''))));}
+    finally{comment.dispose();}
+  }
+  Future<void> showNotifications() async {
+    try {
+      final items=await context.read<PlugsyState>().loadNotifications();
+      if(!mounted)return;
+      showModalBottomSheet(context:context,isScrollControlled:true,builder:(ctx)=>SafeArea(child:ListView(shrinkWrap:true,padding:const EdgeInsets.all(16),children:[const Text('Notifications',style:TextStyle(fontSize:22,fontWeight:FontWeight.bold)),if(items.isEmpty)const Text('No notifications yet.'),...items.map((n)=>ListTile(leading:Icon(n['is_read']==true?Icons.notifications_none:Icons.notifications_active),title:Text('${n['title']}'),subtitle:Text('${n['body']}'),onTap:(){context.read<PlugsyState>().request('/notifications/${n['id']}/read/',method:'POST').catchError((_)=>{});}))])));
+    } catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString())));}
+  }
   @override Widget build(BuildContext context)=>Scaffold(
-    appBar:AppBar(title:const Text('Plugsy',style:TextStyle(fontSize:25,fontWeight:FontWeight.w900)),actions:[IconButton(onPressed:()=>context.read<PlugsyState>().logout(),icon:const Icon(Icons.logout))]),
+    appBar:AppBar(title:const Text('Plugsy',style:TextStyle(fontSize:25,fontWeight:FontWeight.w900)),actions:[IconButton(tooltip:'Notifications',onPressed:showNotifications,icon:const Icon(Icons.notifications_outlined)),IconButton(onPressed:()=>context.read<PlugsyState>().logout(),icon:const Icon(Icons.logout))]),
     body:IndexedStack(index:tab,children:[discover(),requests()]),
     bottomNavigationBar:NavigationBar(selectedIndex:tab,onDestinationSelected:(v){setState(()=>tab=v);if(v==1)loadBookings();},destinations:const[NavigationDestination(icon:Icon(Icons.explore_outlined),label:'Discover'),NavigationDestination(icon:Icon(Icons.inbox_outlined),label:'Requests')]),
     floatingActionButton:tab==0?FloatingActionButton.extended(onPressed:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>const HostPage())).then((v){if(v==true)nearby();}),icon:const Icon(Icons.add),label:const Text('List a charger')):null,
