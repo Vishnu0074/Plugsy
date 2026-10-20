@@ -71,7 +71,7 @@ def notify_user(user, title, body, kind, booking=None):
             pass
     return notice
 
-def ensure_host_payout(payment):
+def ensure_host_payout(payment, force_retry=False):
     """Create a payout ledger row and initiate a Razorpay Route transfer when configured."""
     booking=payment.booking
     host=booking.charger.host
@@ -86,8 +86,11 @@ def ensure_host_payout(payment):
             "status":"needs_setup",
         },
     )
-    if payout.status in ["initiated","transferred","failed","needs_reconciliation"]:
+    if payout.status in ["initiated","transferred","needs_reconciliation"] or (payout.status=="failed" and not force_retry):
         return payout
+    if force_retry and payout.status=="failed":
+        payout.status="needs_setup"; payout.error_message="Manual retry requested by an administrator."
+        payout.save(update_fields=["status","error_message","updated_at"])
     if amount_paise<=0:
         payout.status="failed"; payout.error_message="Net payout amount must be positive."
         payout.save(update_fields=["status","error_message","updated_at"])
@@ -403,6 +406,19 @@ class DeviceTokenView(APIView):
         if len(token)<20: raise ValidationError({"token":"A valid FCM device token is required."})
         DeviceToken.objects.update_or_create(token=token,defaults={"user":request.user,"platform":platform})
         return Response({"registered":True},status=status.HTTP_200_OK)
+
+class HostPayoutRetryView(APIView):
+    permission_classes=[permissions.IsAdminUser]
+    @transaction.atomic
+    def post(self,request,pk):
+        try: payout=HostPayout.objects.select_for_update().select_related("payment__booking__charger").get(pk=pk)
+        except HostPayout.DoesNotExist: return Response({"detail":"Payout not found."},status=404)
+        if payout.status=="needs_reconciliation":
+            raise ValidationError("This payout may have been accepted by Razorpay. Reconcile it in the provider dashboard before retrying.")
+        if payout.status in ["initiated","transferred"]:
+            raise ValidationError("This payout has already been initiated.")
+        result=ensure_host_payout(payout.payment,force_retry=True)
+        return Response({"id":result.id,"booking_id":result.payment.booking_id,"amount_paise":result.amount_paise,"status":result.status,"transfer_id":result.transfer_id,"error_message":result.error_message})
 
 class HostPayoutListView(APIView):
     permission_classes=[permissions.IsAuthenticated]
