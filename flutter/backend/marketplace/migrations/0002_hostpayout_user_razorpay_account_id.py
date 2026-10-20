@@ -19,7 +19,7 @@ class Migration(migrations.Migration):
                 ("linked_account_id",models.CharField(blank=True,max_length=100)),
                 ("transfer_id",models.CharField(blank=True,max_length=100)),
                 ("amount_paise",models.PositiveIntegerField()),
-                ("status",models.CharField(choices=[("needs_setup","needs_setup"),("initiated","initiated"),("settled","settled"),("failed","failed"),("needs_reconciliation","needs_reconciliation")],default="needs_setup",max_length=30)),
+                ("status",models.CharField(choices=[("needs_setup","needs_setup"),("initiated","initiated"),("transferred","transferred"),("failed","failed"),("needs_reconciliation","needs_reconciliation")],default="needs_setup",max_length=30)),
                 ("error_message",models.CharField(blank=True,max_length=500)),
                 ("created_at",models.DateTimeField(auto_now_add=True)),
                 ("updated_at",models.DateTimeField(auto_now=True)),
