@@ -210,7 +210,7 @@ class _HomePageState extends State<HomePage> {
     final kwh=await showModalBottomSheet<String>(context:context,isScrollControlled:true,builder:(ctx)=>Padding(padding:EdgeInsets.only(left:24,right:24,top:24,bottom:MediaQuery.of(ctx).viewInsets.bottom+24),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.start,children:[
       Text('${c['title']}',style:Theme.of(context).textTheme.titleLarge),
       const SizedBox(height:8),Text('₹${c['price_per_kwh']} / kWh · ${c['connector_type']}'),
-      const SizedBox(height:12),const Text('Choose an estimated energy amount. The host must accept the request. You will pay the final amount after the host records the completed session.'),
+      const SizedBox(height:12),const Text('Choose an estimated energy amount. The host must accept the request. You will settle the final amount with the host outside Plugsy after the session.'),
       const SizedBox(height:12),TextField(controller:estimate,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'Estimated energy (kWh)')),
       const SizedBox(height:12),SizedBox(width:double.infinity,child:FilledButton(onPressed:()=>Navigator.pop(ctx,estimate.text.trim()),child:const Text('Send booking request'))),
     ])));
