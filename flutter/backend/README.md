@@ -21,7 +21,8 @@ The initial migration is committed. Android emulator API URL: `http://10.0.2.2:8
 4. Host starts the session when the driver arrives.
 5. Host records the measured kWh at session completion. The backend calculates the final amount from measured kWh × the host's published per-kWh price.
 6. Driver pays the final amount through Razorpay Checkout. The server verifies the checkout signature and confirms captured status/amount directly with Razorpay; a signed webhook also handles asynchronous confirmation.
-7. Driver can submit one 1–5-star review after the session is complete and payment is confirmed.
+7. When Razorpay Route is enabled and the host has a configured linked account, the backend initiates the host transfer and processes transfer status webhooks. Otherwise the payment is collected but the host payout remains in `needs_setup`.
+8. Driver can submit one 1–5-star review after the session is complete and payment is confirmed.
 
 **Metering limitation:** kWh is currently host-entered, not read from an EV charger/energy meter. Do not describe it as independently verified. Real-world launch needs metering integration, disputes/refunds, host identity and charger safety verification.
 
@@ -44,7 +45,8 @@ Set these environment variables on the backend host:
 - `SECRET_KEY`: long random secret; never use the development default.
 - `DEBUG=False`, `ALLOWED_HOSTS`, `DATABASE_URL`, `CORS_ALLOWED_ORIGINS`.
 - `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET`: use Razorpay test keys during testing; never place the secret in Flutter.
-- `RAZORPAY_WEBHOOK_SECRET`: create a Razorpay webhook for `payment.captured` and `payment.failed`, pointing to `https://YOUR_API/api/payments/razorpay/webhook/`.
+- `RAZORPAY_WEBHOOK_SECRET`: create a Razorpay webhook for `payment.captured`, `payment.failed`, `transfer.processed`, `transfer.failed`, and `transfer.reversed`, pointing to `https://YOUR_API/api/payments/razorpay/webhook/`.
+- `RAZORPAY_ROUTE_ENABLED=true` only after Razorpay Route is activated for your business. A verified host's linked account ID must be entered in Django admin (`Users → Plugsy → Razorpay account ID`) after the provider's host onboarding/KYC is complete. The payout ledger shows `needs_setup`, `initiated`, `settled`, `failed`, or `needs_reconciliation`; network-uncertain transfers must be reconciled in the Razorpay dashboard before retrying.
 - `FIREBASE_SERVICE_ACCOUNT_JSON`: the Firebase service-account JSON encoded as a single-line JSON string for FCM push delivery.
 
 ## Firebase mobile setup
