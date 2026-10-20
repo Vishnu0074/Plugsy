@@ -1,13 +1,8 @@
 from decimal import Decimal
-import hashlib
-import hmac
-import json
-import os
-from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
-from .models import Charger, Booking, Payment, HostPayout, Review, AppNotification
+from .models import Charger, Booking, Review, AppNotification
 
 User = get_user_model()
 
@@ -23,7 +18,7 @@ class BookingLifecycleTests(TestCase):
         )
         self.client = APIClient()
 
-    def test_request_accept_start_complete_payment_review_lifecycle(self):
+    def test_request_accept_start_complete_manual_payment_review_lifecycle(self):
         self.client.force_authenticate(self.driver)
         response = self.client.post("/api/bookings/", {"charger": self.charger.id, "estimated_kwh": "10.00"}, format="json")
         self.assertEqual(response.status_code, 201, response.data)
@@ -46,9 +41,10 @@ class BookingLifecycleTests(TestCase):
         self.assertEqual(Decimal(response.data["total_amount"]), Decimal("105.00"))
 
         booking = Booking.objects.get(pk=booking_id)
-        Payment.objects.create(booking=booking, order_id="test_order_001", amount_paise=10500, status="paid", payment_id="test_payment_001")
-        booking.payment_status = "paid"
-        booking.save(update_fields=["payment_status"])
+        self.client.force_authenticate(self.host)
+        response = self.client.post(f"/api/bookings/{booking_id}/mark-paid/", {}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["payment_status"], "paid")
 
         self.client.force_authenticate(self.driver)
         response = self.client.post("/api/reviews/", {
@@ -76,34 +72,15 @@ class BookingLifecycleTests(TestCase):
         }, format="json")
         self.assertEqual(response.status_code, 400)
 
-    @patch.dict(os.environ, {"RAZORPAY_KEY_ID":"rzp_test_key", "RAZORPAY_KEY_SECRET":"test_secret", "RAZORPAY_ROUTE_ENABLED":"false"}, clear=False)
-    @patch("marketplace.views.urllib.request.urlopen")
-    def test_razorpay_checkout_verification_creates_payout_record(self, mocked_urlopen):
+
+    def test_only_host_can_mark_completed_booking_as_paid(self):
         booking = Booking.objects.create(
             charger=self.charger, driver=self.driver, status="completed",
-            estimated_kwh=Decimal("10.00"), actual_kwh=Decimal("8.40"),
-            total_amount=Decimal("105.00"), platform_fee=Decimal("0.00"),
+            estimated_kwh=Decimal("5.00"), actual_kwh=Decimal("4.00"),
+            total_amount=Decimal("50.00"),
         )
-        def mocked_response(data):
-            response = MagicMock()
-            response.__enter__.return_value.read.return_value = json.dumps(data).encode()
-            return response
-        mocked_urlopen.side_effect = [
-            mocked_response({"id":"order_test_001","amount":10500,"currency":"INR"}),
-            mocked_response({"id":"pay_test_001","order_id":"order_test_001","amount":10500,"currency":"INR","status":"captured"}),
-        ]
         self.client.force_authenticate(self.driver)
-        response = self.client.post(f"/api/bookings/{booking.id}/payment-order/", {}, format="json")
-        self.assertEqual(response.status_code, 200, response.data)
-        signature = hmac.new(b"test_secret", b"order_test_001|pay_test_001", hashlib.sha256).hexdigest()
-        response = self.client.post(f"/api/bookings/{booking.id}/verify-payment/", {
-            "razorpay_payment_id":"pay_test_001",
-            "razorpay_order_id":"order_test_001",
-            "razorpay_signature":signature,
-        }, format="json")
-        self.assertEqual(response.status_code, 200, response.data)
+        response = self.client.post(f"/api/bookings/{booking.id}/mark-paid/", {}, format="json")
+        self.assertEqual(response.status_code, 403)
         booking.refresh_from_db()
-        self.assertEqual(booking.payment_status, "paid")
-        payout = HostPayout.objects.get(payment__booking=booking)
-        self.assertEqual(payout.status, "needs_setup")
-        self.assertEqual(payout.amount_paise, 10500)
+        self.assertEqual(booking.payment_status, "unpaid")
