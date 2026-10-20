@@ -30,11 +30,43 @@ class Booking(models.Model):
     status = models.CharField(max_length=20,choices=STATUS,default="pending")
     requested_at = models.DateTimeField(auto_now_add=True)
     responded_at = models.DateTimeField(null=True,blank=True)
-    estimated_kwh = models.DecimalField(max_digits=7,decimal_places=2,null=True,blank=True)
+    session_started_at = models.DateTimeField(null=True,blank=True)
+    completed_at = models.DateTimeField(null=True,blank=True)
+    estimated_kwh = models.DecimalField(max_digits=7,decimal_places=2,validators=[MinValueValidator(0.1)])
+    actual_kwh = models.DecimalField(max_digits=7,decimal_places=2,null=True,blank=True,validators=[MinValueValidator(0.01)])
     total_amount = models.DecimalField(max_digits=9,decimal_places=2,null=True,blank=True)
     platform_fee = models.DecimalField(max_digits=9,decimal_places=2,null=True,blank=True)
     payment_status = models.CharField(max_length=20,default="unpaid")
     class Meta: ordering = ["-requested_at"]
+
+class Payment(models.Model):
+    STATUS = [(x,x) for x in ["created","paid","failed","refunded"]]
+    booking = models.OneToOneField(Booking,on_delete=models.PROTECT,related_name="payment")
+    provider = models.CharField(max_length=30,default="razorpay")
+    order_id = models.CharField(max_length=100,unique=True)
+    payment_id = models.CharField(max_length=100,blank=True)
+    amount_paise = models.PositiveIntegerField()
+    currency = models.CharField(max_length=3,default="INR")
+    status = models.CharField(max_length=20,choices=STATUS,default="created")
+    signature = models.CharField(max_length=256,blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    paid_at = models.DateTimeField(null=True,blank=True)
+
+class DeviceToken(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,related_name="device_tokens")
+    token = models.TextField(unique=True)
+    platform = models.CharField(max_length=20,default="unknown")
+    updated_at = models.DateTimeField(auto_now=True)
+
+class AppNotification(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,related_name="app_notifications")
+    title = models.CharField(max_length=120)
+    body = models.CharField(max_length=500)
+    kind = models.CharField(max_length=40,default="general")
+    booking = models.ForeignKey(Booking,null=True,blank=True,on_delete=models.CASCADE,related_name="notifications")
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta: ordering = ["-created_at"]
 
 class Review(models.Model):
     charger = models.ForeignKey(Charger,on_delete=models.CASCADE,related_name="reviews")
