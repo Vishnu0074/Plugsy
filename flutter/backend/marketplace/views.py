@@ -401,6 +401,17 @@ class DeviceTokenView(APIView):
         DeviceToken.objects.update_or_create(token=token,defaults={"user":request.user,"platform":platform})
         return Response({"registered":True},status=status.HTTP_200_OK)
 
+class HostPayoutListView(APIView):
+    permission_classes=[permissions.IsAuthenticated]
+    def get(self,request):
+        payouts=HostPayout.objects.filter(host=request.user).select_related("payment__booking").order_by("-created_at")[:100]
+        return Response([{
+            "id":p.id,"booking_id":p.payment.booking_id,"amount_paise":p.amount_paise,
+            "amount_rupees":str((Decimal(p.amount_paise)/100).quantize(Decimal("0.01"))),
+            "status":p.status,"transfer_id":p.transfer_id,"error_message":p.error_message,
+            "created_at":p.created_at.isoformat(),"updated_at":p.updated_at.isoformat(),
+        } for p in payouts])
+
 class NotificationListView(APIView):
     permission_classes=[permissions.IsAuthenticated]
     def get(self,request):
