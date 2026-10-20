@@ -248,6 +248,50 @@ class VerifyPaymentView(APIView):
             notify_user(booking.charger.host,"Plugsy payment received",f"Payment of ₹{booking.total_amount} for {booking.charger.title} was verified.","payment_received",booking)
         return Response({"status":"paid","booking_id":booking.id,"amount":str(booking.total_amount)})
 
+class RazorpayWebhookView(APIView):
+    authentication_classes=[]
+    permission_classes=[permissions.AllowAny]
+    @transaction.atomic
+    def post(self,request):
+        secret=os.getenv("RAZORPAY_WEBHOOK_SECRET","")
+        signature=request.headers.get("X-Razorpay-Signature","")
+        if not secret:
+            raise APIException("Razorpay webhook secret is not configured.")
+        expected=hmac.new(secret.encode(),request.body,hashlib.sha256).hexdigest()
+        if not signature or not hmac.compare_digest(expected,signature):
+            return Response({"detail":"Invalid webhook signature."},status=400)
+        try:
+            event=json.loads(request.body.decode())
+            entity=event["payload"]["payment"]["entity"]
+            order_id=entity["order_id"]
+            payment_id=entity["id"]
+        except (ValueError,KeyError,TypeError):
+            return Response({"detail":"Invalid webhook payload."},status=400)
+        try:
+            payment=Payment.objects.select_for_update().select_related("booking__charger").get(order_id=order_id)
+        except Payment.DoesNotExist:
+            # Unknown orders should not be retried forever by the provider.
+            return Response({"received":True,"ignored":True})
+        if int(entity.get("amount",0)) != payment.amount_paise:
+            return Response({"detail":"Webhook amount mismatch."},status=400)
+        if event.get("event")=="payment.captured" or entity.get("status")=="captured":
+            if payment.status!="paid":
+                payment.payment_id=payment_id
+                payment.status="paid"
+                payment.paid_at=timezone.now()
+                payment.save(update_fields=["payment_id","status","paid_at"])
+                booking=payment.booking
+                booking.payment_status="paid"
+                booking.save(update_fields=["payment_status"])
+                notify_user(booking.charger.host,"Plugsy payment received",f"Payment of ₹{booking.total_amount} for {booking.charger.title} was verified.","payment_received",booking)
+        elif event.get("event")=="payment.failed" and payment.status!="paid":
+            payment.payment_id=payment_id
+            payment.status="failed"
+            payment.save(update_fields=["payment_id","status"])
+            payment.booking.payment_status="failed"
+            payment.booking.save(update_fields=["payment_status"])
+        return Response({"received":True})
+
 class DeviceTokenView(APIView):
     permission_classes=[permissions.IsAuthenticated]
     def post(self,request):
