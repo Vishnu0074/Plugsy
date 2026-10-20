@@ -12,7 +12,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import generics, permissions, status
-from rest_framework.exceptions import ValidationError, PermissionDenied, APIException
+from rest_framework.exceptions import ValidationError, PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -152,8 +152,6 @@ class BookingCompleteView(APIView):
         if actual<Decimal("0.01") or actual>Decimal("1000"): raise ValidationError({"actual_kwh":"Energy must be at least 0.01 and no more than 1000 kWh."})
         actual=actual.quantize(Decimal("0.01"),rounding=ROUND_HALF_UP)
         total=(actual*booking.charger.price_per_kwh).quantize(Decimal("0.01"),rounding=ROUND_HALF_UP)
-        if total < Decimal("1.00"):
-            raise ValidationError({"actual_kwh":"The final total must be at least ₹1.00 for online payment."})
         # Platform fee remains zero until a disclosed fee policy is configured.
         booking.actual_kwh=actual
         booking.total_amount=total
