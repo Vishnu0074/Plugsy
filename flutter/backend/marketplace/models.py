@@ -55,7 +55,7 @@ class Payment(models.Model):
     paid_at = models.DateTimeField(null=True,blank=True)
 
 class HostPayout(models.Model):
-    STATUS = [(x,x) for x in ["needs_setup","initiated","settled","failed","needs_reconciliation"]]
+    STATUS = [(x,x) for x in ["needs_setup","initiated","transferred","failed","needs_reconciliation"]]
     payment = models.OneToOneField(Payment,on_delete=models.PROTECT,related_name="host_payout")
     host = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.PROTECT,related_name="payouts")
     linked_account_id = models.CharField(max_length=100,blank=True)
