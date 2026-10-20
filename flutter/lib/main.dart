@@ -6,32 +6,11 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'dart:convert';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:razorpay_flutter/razorpay_flutter.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 const apiBase = String.fromEnvironment('PLUGSY_API_BASE_URL', defaultValue: 'http://10.0.2.2:8000/api');
 
-final localNotifications = FlutterLocalNotificationsPlugin();
-const bookingChannel = AndroidNotificationChannel('plugsy_booking_alerts','Plugsy booking alerts',description:'Booking, charging-session, and payment updates',importance:Importance.max,playSound:true);
-
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  const initSettings=InitializationSettings(android:AndroidInitializationSettings('@mipmap/ic_launcher'),iOS:DarwinInitializationSettings());
-  await localNotifications.initialize(initSettings);
-  await localNotifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.createNotificationChannel(bookingChannel);
-  try {
-    await Firebase.initializeApp();
-    FirebaseMessaging.onMessage.listen((message) async {
-      final title=message.notification?.title ?? 'Plugsy update';
-      final body=message.notification?.body ?? 'You have a new booking update.';
-      await localNotifications.show(DateTime.now().millisecondsSinceEpoch.remainder(100000),title,body,NotificationDetails(
-        android:AndroidNotificationDetails(bookingChannel.id,bookingChannel.name,channelDescription:bookingChannel.description,importance:Importance.max,priority:Priority.high,playSound:true),
-        iOS:const DarwinNotificationDetails(presentAlert:true,presentBadge:true,presentSound:true),
-      ));
-    });
-  } catch (_) { /* Configure Firebase to enable remote and local booking alerts. */ }
   runApp(ChangeNotifierProvider(create: (_) => PlugsyState(), child: const PlugsyApp()));
 }
 
@@ -45,7 +24,7 @@ class PlugsyState extends ChangeNotifier {
     access = p.getString('access');
     loading = false;
     notifyListeners();
-    if (access != null) { await _registerPushToken(); await loadChargers(); }
+    if (access != null) { await loadChargers(); }
   }
   PlugsyState() { init(); }
   Future<dynamic> request(String path, {String method = 'GET', Map<String,dynamic>? body, bool auth = true}) async {
@@ -69,19 +48,7 @@ class PlugsyState extends ChangeNotifier {
     final p = await SharedPreferences.getInstance();
     if (access != null) await p.setString('access', access!);
     notifyListeners();
-    await _registerPushToken();
     await loadChargers();
-  }
-  Future<void> _registerPushToken() async {
-    try {
-      if (Firebase.apps.isEmpty || access == null) return;
-      await FirebaseMessaging.instance.requestPermission(alert: true, badge: true, sound: true);
-      FirebaseMessaging.instance.onTokenRefresh.listen((token) {
-        request('/devices/register/', method: 'POST', body: {'token': token, 'platform': 'mobile'}).catchError((_) => <String,dynamic>{});
-      });
-      final token = await FirebaseMessaging.instance.getToken();
-      if (token != null) await request('/devices/register/', method: 'POST', body: {'token': token, 'platform': 'mobile'});
-    } catch (_) { /* The app remains usable without Firebase configuration. */ }
   }
   Future<void> auth({required bool register, required String identity, required String password, String email = '', bool host = false}) async {
     final data = await request(register ? '/auth/register/' : '/auth/login/', method:'POST', auth:false,
@@ -150,7 +117,7 @@ class _AuthPageState extends State<AuthPage> {
 
 class HomePage extends StatefulWidget { const HomePage({super.key}); @override State<HomePage> createState()=>_HomePageState(); }
 class _HomePageState extends State<HomePage> {
-  int tab=0; List<dynamic> bookings=[]; List<dynamic> payouts=[]; bool busy=false; LatLng? userPoint; late Razorpay _razorpay; int? _paymentBookingId;
+  int tab=0; List<dynamic> bookings=[]; bool busy=false; LatLng? userPoint;
   Future<void> nearby() async {
     double? lat,lng;
     try {
@@ -167,30 +134,34 @@ class _HomePageState extends State<HomePage> {
     try {
       final d=await context.read<PlugsyState>().request('/bookings/');
       bookings=d is List?d:(d['results'] as List? ?? []);
-      try { final p=await context.read<PlugsyState>().request('/payouts/'); payouts=p is List?p:(p['results'] as List? ?? []); } catch (_) { payouts=[]; }
     } catch(e){if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString())));}
     finally{if(mounted)setState(()=>busy=false);}
   }
-  @override void initState(){super.initState();_razorpay=Razorpay();_razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS,_paymentSuccess);_razorpay.on(Razorpay.EVENT_PAYMENT_ERROR,_paymentError);_razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET,_externalWallet);WidgetsBinding.instance.addPostFrameCallback((_)=>nearby());}
-  @override void dispose(){_razorpay.clear();super.dispose();}
-  void _paymentSuccess(PaymentSuccessResponse response) async {
-    final id=_paymentBookingId;
-    if(id==null)return;
+  @override void initState(){super.initState();WidgetsBinding.instance.addPostFrameCallback((_)=>nearby());}
+  Future<void> markPaid(dynamic booking) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Confirm payment received?'),
+        content: Text('Mark ₹${booking['total_amount']} as paid for this completed session? Only do this after receiving the money outside the app.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Confirm received')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
     try {
-      await context.read<PlugsyState>().request('/bookings/$id/verify-payment/',method:'POST',body:{'razorpay_payment_id':response.paymentId,'razorpay_order_id':response.orderId,'razorpay_signature':response.signature});
-      if(mounted){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Payment verified successfully.')));await loadBookings();}
-    } catch(e) { if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Payment verification failed: $e'))); }
-    finally {_paymentBookingId=null;}
-  }
-  void _paymentError(PaymentFailureResponse response){_paymentBookingId=null;if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Payment was not completed: ${response.message??response.code}')));}
-  void _externalWallet(ExternalWalletResponse response){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('External wallet selected: ${response.walletName??'wallet'}')));}
-  Future<void> payForBooking(dynamic booking) async {
-    try {
-      final id=booking['id'] as int;
-      final order=await context.read<PlugsyState>().request('/bookings/$id/payment-order/',method:'POST');
-      _paymentBookingId=id;
-      _razorpay.open({'key':order['key_id'],'amount':order['amount'],'currency':order['currency'],'name':'Plugsy','order_id':order['order_id'],'description':'EV charging session','prefill':{'email':''},'theme':{'color':'#B7F36B'}});
-    } catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.toString().replaceFirst('Exception: ',''))));}
+      await context.read<PlugsyState>().request('/bookings/${booking['id']}/mark-paid/', method: 'POST');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Payment marked as received.')));
+        await loadBookings();
+      }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    }
   }
   Future<void> markStarted(dynamic booking) async {
     try { await context.read<PlugsyState>().request('/bookings/${booking['id']}/start/',method:'POST'); await loadBookings(); }
@@ -257,10 +228,6 @@ class _HomePageState extends State<HomePage> {
     const SizedBox(height:8),
     if(busy)const Center(child:CircularProgressIndicator()),
     if(!busy&&bookings.isEmpty)const Text('Booking requests and sessions will appear here. Pull to refresh.'),
-    if(payouts.isNotEmpty) ...[
-      const SizedBox(height:16),const Text('Host payouts',style:TextStyle(fontSize:18,fontWeight:FontWeight.w800)),
-      ...payouts.map((p)=>Card(child:ListTile(leading:const Icon(Icons.account_balance_wallet_outlined),title:Text('Booking #${p['booking_id']} · ₹${p['amount_rupees']}'),subtitle:Text('${p['status']} · ${p['error_message']??''}'),trailing:p['status']=='transferred'?const Icon(Icons.check_circle,color:Colors.green):const Icon(Icons.schedule)))),
-    ],
     ...bookings.map((b){
       final isHost=b['is_host']==true;
       final state=(b['status']??'pending').toString();
@@ -274,8 +241,10 @@ class _HomePageState extends State<HomePage> {
         action=IconButton(tooltip:'Start charging session',onPressed:()=>markStarted(b),icon:const Icon(Icons.play_circle_outline));
       } else if(isHost&&state=='accepted'&&started){
         action=IconButton(tooltip:'Complete session',onPressed:()=>completeSession(b),icon:const Icon(Icons.check_circle_outline));
+      } else if(isHost&&state=='completed'&&!paid){
+        action=FilledButton(onPressed:()=>markPaid(b),child:const Text('Mark as paid'));
       } else if(!isHost&&state=='completed'&&!paid){
-        action=FilledButton(onPressed:()=>payForBooking(b),child:const Text('Pay'));
+        action=const Text('Awaiting host confirmation');
       } else if(!isHost&&state=='completed'&&paid&&!hasReview){
         action=TextButton(onPressed:()=>leaveReview(b),child:const Text('Review'));
       } else if(!isHost&&state=='completed'&&paid&&hasReview){
@@ -291,7 +260,7 @@ class _HomePageState extends State<HomePage> {
         if(b['total_amount']!=null)Text('Final total: ₹${b['total_amount']} · Payment: ${b['payment_status']}'),
         if(state=='accepted'&&!started)const Text('Host can start the session after the driver arrives.',style:TextStyle(color:Colors.black54)),
         if(state=='accepted'&&started)const Text('Session started. Host records measured kWh when charging ends.',style:TextStyle(color:Colors.black54)),
-        if(state=='completed'&&!paid)const Text('Session is complete. Driver payment is due before a review.',style:TextStyle(color:Colors.black54)),
+        if(state=='completed'&&!paid)const Text('Payment is handled outside Plugsy. The host marks it as paid after receiving the money.',style:TextStyle(color:Colors.black54)),
         if(action!=null)Align(alignment:Alignment.centerRight,child:action),
       ])));
     }),
