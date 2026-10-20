@@ -47,7 +47,7 @@ Set these environment variables on the backend host:
 - `DEBUG=False`, `ALLOWED_HOSTS`, `DATABASE_URL`, `CORS_ALLOWED_ORIGINS`.
 - `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET`: use Razorpay test keys during testing; never place the secret in Flutter.
 - `RAZORPAY_WEBHOOK_SECRET`: create a Razorpay webhook for `payment.captured`, `payment.failed`, `transfer.processed`, `transfer.failed`, and `transfer.reversed`, pointing to `https://YOUR_API/api/payments/razorpay/webhook/`.
-- `RAZORPAY_ROUTE_ENABLED=true` only after Razorpay Route is activated for your business. A verified host's linked account ID must be entered in Django admin (`Users → Plugsy → Razorpay account ID`) after the provider's host onboarding/KYC is complete. The payout ledger shows `needs_setup`, `initiated`, `settled`, `failed`, or `needs_reconciliation`; network-uncertain transfers must be reconciled in the Razorpay dashboard before retrying.
+- `RAZORPAY_ROUTE_ENABLED=true` only after Razorpay Route is activated for your business. A verified host's linked account ID must be entered in Django admin (`Users → Plugsy → Razorpay account ID`) after the provider's host onboarding/KYC is complete. The payout ledger shows `needs_setup`, `initiated`, `transferred`, `failed`, or `needs_reconciliation`; network-uncertain transfers must be reconciled in the Razorpay dashboard before retrying.
 - `FIREBASE_SERVICE_ACCOUNT_JSON`: the Firebase service-account JSON encoded as a single-line JSON string for FCM push delivery.
 
 ## Firebase mobile setup
