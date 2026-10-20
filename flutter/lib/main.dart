@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:flutter_map/flutter_map.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 import 'package:latlong2/latlong.dart';
 import 'dart:convert';
 
@@ -269,12 +269,169 @@ class _HomePageState extends State<HomePage> {
 }
 
 class ChargerMap extends StatelessWidget {
-  const ChargerMap({super.key,required this.chargers,this.initial}); final List<dynamic> chargers; final LatLng? initial;
-  @override Widget build(BuildContext context)=>Scaffold(appBar:AppBar(title:const Text('Chargers nearby')),body:FlutterMap(options:MapOptions(initialCenter:initial ?? (chargers.isNotEmpty ? LatLng(double.parse(chargers.first['latitude'].toString()),double.parse(chargers.first['longitude'].toString())) : const LatLng(9.9312,76.2673)),initialZoom:11),children:[
-    TileLayer(urlTemplate:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',userAgentPackageName:'com.plugsy.app'),
-    MarkerLayer(markers:chargers.map((c)=>Marker(point:LatLng(double.parse(c['latitude'].toString()),double.parse(c['longitude'].toString())),width:48,height:48,child:GestureDetector(onTap:()=>showModalBottomSheet(context:context,builder:(_)=>Padding(padding:const EdgeInsets.all(20),child:Text('${c['title']} · ₹${c['price_per_kwh']}/kWh · ★ ${c['average_rating']??0}'))),child:const Icon(Icons.location_pin,color:Colors.green,size:40)))).toList()),
-    const RichAttributionWidget(attributions:[TextSourceAttribution('© OpenStreetMap contributors')]),
-  ]));
+  const ChargerMap({super.key, required this.chargers, this.initial});
+  final List<dynamic> chargers;
+  final LatLng? initial;
+
+  @override
+  Widget build(BuildContext context) {
+    final fallback = chargers.isNotEmpty
+        ? LatLng(
+            double.tryParse(chargers.first['latitude'].toString()) ?? 9.9312,
+            double.tryParse(chargers.first['longitude'].toString()) ?? 76.2673,
+          )
+        : const LatLng(9.9312, 76.2673);
+    return Scaffold(
+      appBar: AppBar(title: const Text('Chargers nearby')),
+      body: LeafletMapView(
+        initial: initial ?? fallback,
+        chargers: chargers,
+        onChargerTap: (charger) {
+          showModalBottomSheet(
+            context: context,
+            builder: (_) => SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('${charger['title']}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    Text('₹${charger['price_per_kwh']} / kWh'),
+                    Text('${charger['connector_type']} · ${charger['power_kw']} kW'),
+                    Text('★ ${charger['average_rating'] ?? 0} (${charger['review_count'] ?? 0} reviews)'),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Actual Leaflet.js map in a WebView, using OpenStreetMap tiles.
+class LeafletMapView extends StatefulWidget {
+  const LeafletMapView({
+    super.key,
+    required this.initial,
+    this.chargers = const [],
+    this.pickMode = false,
+    this.onPointSelected,
+    this.onChargerTap,
+  });
+
+  final LatLng initial;
+  final List<dynamic> chargers;
+  final bool pickMode;
+  final ValueChanged<LatLng>? onPointSelected;
+  final ValueChanged<dynamic>? onChargerTap;
+
+  @override
+  State<LeafletMapView> createState() => _LeafletMapViewState();
+}
+
+class _LeafletMapViewState extends State<LeafletMapView> {
+  late final WebViewController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..addJavaScriptChannel(
+        'LeafletBridge',
+        onMessageReceived: (message) {
+          try {
+            final data = jsonDecode(message.message) as Map<String, dynamic>;
+            if (data['type'] == 'pick') {
+              widget.onPointSelected?.call(
+                LatLng((data['lat'] as num).toDouble(), (data['lng'] as num).toDouble()),
+              );
+            } else if (data['type'] == 'charger') {
+              final index = data['index'] as int;
+              if (index >= 0 && index < widget.chargers.length) {
+                widget.onChargerTap?.call(widget.chargers[index]);
+              }
+            }
+          } catch (_) {}
+        },
+      )
+      ..loadHtmlString(_buildLeafletHtml());
+  }
+
+  String _buildLeafletHtml() {
+    final chargerData = widget.chargers.map((charger) => {
+      'lat': double.tryParse(charger['latitude'].toString()) ?? 0,
+      'lng': double.tryParse(charger['longitude'].toString()) ?? 0,
+      'title': charger['title']?.toString() ?? 'Charger',
+      'price': charger['price_per_kwh']?.toString() ?? '',
+      'connector': charger['connector_type']?.toString() ?? '',
+    }).toList();
+    final chargersJson = jsonEncode(chargerData);
+    final initialLat = widget.initial.latitude;
+    final initialLng = widget.initial.longitude;
+    final pickMode = widget.pickMode ? 'true' : 'false';
+
+    return '''
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+html, body, #map { height:100%; width:100%; margin:0; padding:0; }
+.leaflet-container { font-family: Arial, sans-serif; }
+.pick-hint { position:absolute; z-index:1000; top:12px; left:50%; transform:translateX(-50%); background:#17231A; color:#fff; padding:9px 14px; border-radius:18px; white-space:nowrap; font-size:13px; box-shadow:0 2px 8px #0003; }
+</style>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+<div id="map"></div>
+${widget.pickMode ? '<div class="pick-hint">Tap the map to place your charger pin</div>' : ''}
+<script>
+const pickMode = $pickMode;
+const chargers = $chargersJson;
+const map = L.map('map', { zoomControl: true }).setView([$initialLat, $initialLng], ${widget.pickMode ? 15 : 12});
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+let selectedMarker = null;
+function setSelectedPoint(lat, lng) {
+  if (selectedMarker) map.removeLayer(selectedMarker);
+  selectedMarker = L.circleMarker([lat, lng], {
+    radius: 10, color: '#ffffff', weight: 3, fillColor: '#e53935', fillOpacity: 1
+  }).addTo(map);
+}
+if (pickMode) {
+  setSelectedPoint($initialLat, $initialLng);
+  map.on('click', function(e) {
+    setSelectedPoint(e.latlng.lat, e.latlng.lng);
+    LeafletBridge.postMessage(JSON.stringify({type:'pick', lat:e.latlng.lat, lng:e.latlng.lng}));
+  });
+} else {
+  chargers.forEach(function(charger, index) {
+    const marker = L.circleMarker([charger.lat, charger.lng], {
+      radius: 9, color: '#ffffff', weight: 2, fillColor: '#39834b', fillOpacity: 1
+    }).addTo(map);
+    marker.bindPopup('<strong>' + String(charger.title).replace(/[&<>"]/g, '') + '</strong><br>₹' + charger.price + ' / kWh<br>' + String(charger.connector).replace(/[&<>"]/g, ''));
+    marker.on('click', function() {
+      LeafletBridge.postMessage(JSON.stringify({type:'charger', index:index}));
+    });
+  });
+}
+setTimeout(function(){ map.invalidateSize(); }, 250);
+</script>
+</body>
+</html>
+''';
+  }
+
+  @override
+  Widget build(BuildContext context) => WebViewWidget(controller: _controller);
 }
 
 class HostPage extends StatefulWidget { const HostPage({super.key}); @override State<HostPage> createState()=>_HostPageState(); }
@@ -302,5 +459,39 @@ class _HostPageState extends State<HostPage>{
  ])));
 }
 class PickMap extends StatefulWidget{const PickMap({super.key,this.initial});final LatLng? initial;@override State<PickMap> createState()=>_PickMapState();}
-class _PickMapState extends State<PickMap>{late LatLng point;@override void initState(){super.initState();point=widget.initial??const LatLng(9.9312,76.2673);}
- @override Widget build(BuildContext context)=>Scaffold(appBar:AppBar(title:const Text('Pick charger location'),actions:[TextButton(onPressed:()=>Navigator.pop(context,point),child:const Text('Confirm'))]),body:FlutterMap(options:MapOptions(initialCenter:point,initialZoom:14,onTap:(_,p)=>setState(()=>point=p)),children:[TileLayer(urlTemplate:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',userAgentPackageName:'com.plugsy.app'),MarkerLayer(markers:[Marker(point:point,width:48,height:48,child:const Icon(Icons.location_pin,color:Colors.red,size:42))]),const RichAttributionWidget(attributions:[TextSourceAttribution('© OpenStreetMap contributors')])]),floatingActionButton:FloatingActionButton.extended(onPressed:()=>Navigator.pop(context,point),icon:const Icon(Icons.check),label:const Text('Use this location')));}
+class _PickMapState extends State<PickMap>{
+  late LatLng point;
+  @override void initState(){super.initState();point=widget.initial??const LatLng(9.9312,76.2673);}
+  Future<void> useCurrentLocation() async {
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) throw Exception('Enable location services.');
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+        throw Exception('Location permission is needed.');
+      }
+      final position = await Geolocator.getCurrentPosition();
+      if (mounted) setState(() => point = LatLng(position.latitude, position.longitude));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Pick charger location'), actions: [
+      TextButton(onPressed: () => Navigator.pop(context, point), child: const Text('Confirm')),
+    ]),
+    body: LeafletMapView(
+      key: ValueKey('${point.latitude},${point.longitude}'),
+      initial: point,
+      pickMode: true,
+      onPointSelected: (value) => setState(() => point = value),
+    ),
+    floatingActionButton: FloatingActionButton.extended(
+      onPressed: useCurrentLocation,
+      icon: const Icon(Icons.my_location),
+      label: const Text('Use current location'),
+    ),
+  );
+}
