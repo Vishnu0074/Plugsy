@@ -220,7 +220,25 @@ class VerifyPaymentView(APIView):
         secret=os.getenv("RAZORPAY_KEY_SECRET","")
         if not secret: raise APIException("Payment verification is not configured.")
         expected=hmac.new(secret.encode(),f"{order_id}|{payment_id}".encode(),hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected,signature): raise ValidationError("Payment signature verification failed.")
+        if not payment_id or not hmac.compare_digest(expected,signature): raise ValidationError("Payment signature verification failed.")
+        # Verify provider-side status and order association as well as the checkout signature.
+        auth=base64.b64encode(f"{os.getenv('RAZORPAY_KEY_ID','')}:{secret}".encode()).decode()
+        payment_req=urllib.request.Request(
+            f"https://api.razorpay.com/v1/payments/{payment_id}",
+            headers={"Authorization":f"Basic {auth}"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(payment_req,timeout=15) as resp:
+                provider_payment=json.loads(resp.read().decode())
+        except (urllib.error.URLError,urllib.error.HTTPError,TimeoutError) as exc:
+            raise APIException(f"Could not verify payment with Razorpay: {exc}")
+        if provider_payment.get("order_id") != payment.order_id:
+            raise ValidationError("Payment does not belong to this order.")
+        if provider_payment.get("status") != "captured":
+            raise ValidationError("Payment is not captured yet. Check again after capture.")
+        if int(provider_payment.get("amount",0)) != payment.amount_paise:
+            raise ValidationError("The captured amount does not match the booking total.")
         if payment.status!="paid":
             payment.payment_id=payment_id; payment.signature=signature; payment.status="paid"; payment.paid_at=timezone.now()
             payment.save(update_fields=["payment_id","signature","status","paid_at"])
