@@ -99,6 +99,8 @@ def ensure_host_payout(payment):
         payout.amount_paise=amount_paise
         payout.error_message="Enable Razorpay Route and complete host linked-account/KYC onboarding."
         payout.save(update_fields=["status","linked_account_id","amount_paise","error_message","updated_at"])
+        if created:
+            notify_user(host,"Host payout setup required",f"Driver payment for booking #{booking.id} is confirmed, but your payout account is not configured yet.","payout_needs_setup",booking)
         return payout
     key_id=os.getenv("RAZORPAY_KEY_ID","")
     key_secret=os.getenv("RAZORPAY_KEY_SECRET","")
