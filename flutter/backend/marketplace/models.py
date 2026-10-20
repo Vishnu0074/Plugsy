@@ -6,6 +6,8 @@ from django.db import models
 class User(AbstractUser):
     email = models.EmailField(unique=True)
     wants_to_host = models.BooleanField(default=False)
+    # Populated only after the host completes the payment provider's linked-account/KYC onboarding.
+    razorpay_account_id = models.CharField(max_length=100, blank=True)
 
 class Charger(models.Model):
     CONNECTORS = [(x,x) for x in ["Type 2","CCS2","CHAdeMO","Bharat AC-001","Bharat DC-001","3-pin socket (verification required)"]]
@@ -51,6 +53,18 @@ class Payment(models.Model):
     signature = models.CharField(max_length=256,blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     paid_at = models.DateTimeField(null=True,blank=True)
+
+class HostPayout(models.Model):
+    STATUS = [(x,x) for x in ["needs_setup","initiated","settled","failed","needs_reconciliation"]]
+    payment = models.OneToOneField(Payment,on_delete=models.PROTECT,related_name="host_payout")
+    host = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.PROTECT,related_name="payouts")
+    linked_account_id = models.CharField(max_length=100,blank=True)
+    transfer_id = models.CharField(max_length=100,blank=True)
+    amount_paise = models.PositiveIntegerField()
+    status = models.CharField(max_length=30,choices=STATUS,default="needs_setup")
+    error_message = models.CharField(max_length=500,blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
 class DeviceToken(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,related_name="device_tokens")
