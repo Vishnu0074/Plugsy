@@ -1,8 +1,13 @@
 from decimal import Decimal
+import hashlib
+import hmac
+import json
+import os
+from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
-from .models import Charger, Booking, Payment, Review, AppNotification
+from .models import Charger, Booking, Payment, HostPayout, Review, AppNotification
 
 User = get_user_model()
 
@@ -70,3 +75,35 @@ class BookingLifecycleTests(TestCase):
             "charger": self.charger.id, "booking": booking.id, "rating": 4, "comment": "Test",
         }, format="json")
         self.assertEqual(response.status_code, 400)
+
+    @patch.dict(os.environ, {"RAZORPAY_KEY_ID":"rzp_test_key", "RAZORPAY_KEY_SECRET":"test_secret", "RAZORPAY_ROUTE_ENABLED":"false"}, clear=False)
+    @patch("marketplace.views.urllib.request.urlopen")
+    def test_razorpay_checkout_verification_creates_payout_record(self, mocked_urlopen):
+        booking = Booking.objects.create(
+            charger=self.charger, driver=self.driver, status="completed",
+            estimated_kwh=Decimal("10.00"), actual_kwh=Decimal("8.40"),
+            total_amount=Decimal("105.00"), platform_fee=Decimal("0.00"),
+        )
+        def mocked_response(data):
+            response = MagicMock()
+            response.__enter__.return_value.read.return_value = json.dumps(data).encode()
+            return response
+        mocked_urlopen.side_effect = [
+            mocked_response({"id":"order_test_001","amount":10500,"currency":"INR"}),
+            mocked_response({"id":"pay_test_001","order_id":"order_test_001","amount":10500,"currency":"INR","status":"captured"}),
+        ]
+        self.client.force_authenticate(self.driver)
+        response = self.client.post(f"/api/bookings/{booking.id}/payment-order/", {}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        signature = hmac.new(b"test_secret", b"order_test_001|pay_test_001", hashlib.sha256).hexdigest()
+        response = self.client.post(f"/api/bookings/{booking.id}/verify-payment/", {
+            "razorpay_payment_id":"pay_test_001",
+            "razorpay_order_id":"order_test_001",
+            "razorpay_signature":signature,
+        }, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        booking.refresh_from_db()
+        self.assertEqual(booking.payment_status, "paid")
+        payout = HostPayout.objects.get(payment__booking=booking)
+        self.assertEqual(payout.status, "needs_setup")
+        self.assertEqual(payout.amount_paise, 10500)
