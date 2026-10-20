@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Charger, Booking, Review, Payment, DeviceToken, AppNotification
+from .models import Charger, Booking, Review, Payment, HostPayout, DeviceToken, AppNotification
 from .serializers import RegisterSerializer, ChargerSerializer, BookingSerializer, ReviewSerializer
 
 User = get_user_model()
@@ -70,6 +70,78 @@ def notify_user(user, title, body, kind, booking=None):
             # In-app notifications remain available if Firebase is not configured.
             pass
     return notice
+
+def ensure_host_payout(payment):
+    """Create a payout ledger row and initiate a Razorpay Route transfer when configured."""
+    booking=payment.booking
+    host=booking.charger.host
+    fee_paise=int(((booking.platform_fee or Decimal("0.00"))*100).quantize(Decimal("1"),rounding=ROUND_HALF_UP))
+    amount_paise=payment.amount_paise-fee_paise
+    payout,created=HostPayout.objects.get_or_create(
+        payment=payment,
+        defaults={
+            "host":host,
+            "linked_account_id":host.razorpay_account_id,
+            "amount_paise":max(amount_paise,0),
+            "status":"needs_setup",
+        },
+    )
+    if payout.status in ["initiated","settled","failed","needs_reconciliation"]:
+        return payout
+    if amount_paise<=0:
+        payout.status="failed"; payout.error_message="Net payout amount must be positive."
+        payout.save(update_fields=["status","error_message","updated_at"])
+        return payout
+    account_id=host.razorpay_account_id.strip()
+    if os.getenv("RAZORPAY_ROUTE_ENABLED","false").lower()!="true" or not account_id:
+        payout.status="needs_setup"
+        payout.linked_account_id=account_id
+        payout.amount_paise=amount_paise
+        payout.error_message="Enable Razorpay Route and complete host linked-account/KYC onboarding."
+        payout.save(update_fields=["status","linked_account_id","amount_paise","error_message","updated_at"])
+        return payout
+    key_id=os.getenv("RAZORPAY_KEY_ID","")
+    key_secret=os.getenv("RAZORPAY_KEY_SECRET","")
+    if not key_id or not key_secret:
+        payout.status="needs_setup"; payout.error_message="Razorpay API credentials are missing."
+        payout.save(update_fields=["status","error_message","updated_at"])
+        return payout
+    payload=json.dumps({"transfers":[{
+        "account":account_id,"amount":amount_paise,"currency":"INR",
+        "notes":{"booking_id":str(booking.id),"plugsy_payment_id":str(payment.id)},
+    }]}).encode()
+    auth=base64.b64encode(f"{key_id}:{key_secret}".encode()).decode()
+    req=urllib.request.Request(
+        f"https://api.razorpay.com/v1/payments/{payment.payment_id}/transfers",
+        data=payload,headers={"Authorization":f"Basic {auth}","Content-Type":"application/json"},method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req,timeout=15) as resp:
+            data=json.loads(resp.read().decode())
+        items=data.get("items") or []
+        transfer=items[0] if items else data
+        transfer_id=transfer.get("id")
+        if not transfer_id:
+            payout.status="needs_reconciliation"
+            payout.error_message="Provider response did not include a transfer ID; reconcile in Razorpay dashboard."
+        else:
+            payout.status="initiated"
+            payout.transfer_id=transfer_id
+            payout.error_message=""
+        payout.linked_account_id=account_id
+        payout.amount_paise=amount_paise
+        payout.save(update_fields=["status","transfer_id","linked_account_id","amount_paise","error_message","updated_at"])
+        if payout.status=="initiated":
+            notify_user(host,"Plugsy host payout initiated",f"A payout of ₹{(Decimal(amount_paise)/100):.2f} was initiated for booking #{booking.id}. Settlement depends on Razorpay Route.","payout_initiated",booking)
+    except urllib.error.HTTPError as exc:
+        detail=exc.read().decode(errors="replace")[:400]
+        payout.status="failed"; payout.error_message=f"Razorpay rejected the transfer: {detail}"
+        payout.save(update_fields=["status","error_message","updated_at"])
+    except (urllib.error.URLError,TimeoutError,ValueError) as exc:
+        # The provider may have accepted a transfer before a network timeout; never auto-retry this case.
+        payout.status="needs_reconciliation"; payout.error_message=f"Check Razorpay dashboard before retrying: {exc}"[:500]
+        payout.save(update_fields=["status","error_message","updated_at"])
+    return payout
 
 def haversine_km(lat1,lon1,lat2,lon2):
     r=6371.0
@@ -249,6 +321,7 @@ class VerifyPaymentView(APIView):
             payment.save(update_fields=["payment_id","signature","status","paid_at"])
             booking.payment_status="paid"; booking.save(update_fields=["payment_status"])
             notify_user(booking.charger.host,"Plugsy payment received",f"Payment of ₹{booking.total_amount} for {booking.charger.title} was verified.","payment_received",booking)
+        ensure_host_payout(payment)
         return Response({"status":"paid","booking_id":booking.id,"amount":str(booking.total_amount)})
 
 class RazorpayWebhookView(APIView):
@@ -287,6 +360,20 @@ class RazorpayWebhookView(APIView):
                 booking.payment_status="paid"
                 booking.save(update_fields=["payment_status"])
                 notify_user(booking.charger.host,"Plugsy payment received",f"Payment of ₹{booking.total_amount} for {booking.charger.title} was verified.","payment_received",booking)
+            ensure_host_payout(payment)
+        elif event.get("event") in ["transfer.processed","transfer.settled","transfer.failed","transfer.reversed"]:
+            try:
+                transfer_entity=event["payload"]["transfer"]["entity"]
+                transfer_id=transfer_entity["id"]
+                payout=HostPayout.objects.select_for_update().get(transfer_id=transfer_id)
+            except (KeyError,HostPayout.DoesNotExist):
+                return Response({"received":True,"ignored":True})
+            if event.get("event") in ["transfer.processed","transfer.settled"]:
+                payout.status="settled"; payout.error_message=""
+            else:
+                payout.status="failed"; payout.error_message=f"Razorpay transfer event: {event.get('event')}"[:500]
+            payout.save(update_fields=["status","error_message","updated_at"])
+            notify_user(payout.host,"Plugsy payout update",f"Your payout for booking #{payout.payment.booking_id} is now {payout.status}.","payout_update",payout.payment.booking)
         elif event.get("event")=="payment.failed" and payment.status!="paid":
             payment.payment_id=payment_id
             payment.status="failed"
